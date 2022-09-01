@@ -10,6 +10,8 @@ pub enum Op<T> {
     Goto(T),
 
     Alloc(TypeId),
+
+    Const(Int),
 }
 
 impl<T> Op<T> {
@@ -25,6 +27,7 @@ impl<T> Op<T> {
             Op::Label(_) | Op::Goto(_) => panic!("Invalid conversion"),
             Op::Halt => Op::Halt,
             Op::Alloc(t) => Op::Alloc(*t),
+            Op::Const(x) => Op::Const(*x),
         }
     }
 }
@@ -61,17 +64,46 @@ pub enum Type {
 
 pub struct Vm {
     types: TypeRegistry,
+    heap: Vec<Int>,
 }
 
 impl Vm {
     pub fn new() -> Self {
         Vm {
             types: TypeRegistry::new(),
+            heap: vec![],
         }
     }
 
     pub fn register_type(&mut self, id: TypeId, fields: Vec<Type>) {
         self.types.register_type(id, fields)
+    }
+
+    pub fn run(&mut self, program: &[Op<Int>]) -> Int {
+        let mut val: Int = 0;
+        let mut ip = 0;
+        loop {
+            let op = program[ip];
+            ip += 1;
+            match op {
+                Op::Halt => return val,
+                Op::Alloc(tid) => val = self.alloc(tid),
+                Op::Const(x) => val = x,
+                _ => todo!("{:?}", op),
+            }
+        }
+    }
+
+    fn alloc(&mut self, tid: TypeId) -> Int {
+        let size = self.types.size(tid);
+        let ptr = self.heap.len();
+
+        self.heap.push(tid);
+        for _ in 0..size {
+            self.heap.push(0);
+        }
+
+        1 + ptr as Int
     }
 }
 
@@ -158,5 +190,26 @@ mod tests {
         vm.register_type(0, vec![Type::Pointer(a)]);
 
         assert_eq!(vm.types.size(a), 1);
+    }
+
+    #[test]
+    fn test_run_trivial_program() {
+        let mut vm = Vm::new();
+
+        let res = vm.run(&[Op::Const(42), Op::Halt]);
+
+        assert_eq!(res, 42);
+    }
+
+    #[test]
+    fn test_alloc_on_top_of_heap() {
+        let mut vm = Vm::new();
+        let tid = 11;
+        vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
+
+        let ptr = vm.run(&[Op::Alloc(tid), Op::Halt]) as usize;
+
+        assert_eq!(vm.heap[ptr-1], tid);
+        assert_eq!(vm.heap.len() - ptr, 2);
     }
 }
