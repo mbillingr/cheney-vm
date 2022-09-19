@@ -9,6 +9,9 @@ const TID_RELOC_PTR: TypeId = TypeId(2);
 
 const RESERVED_TIDS: [TypeId; 3] = [TID_TOMBSTONE, TID_PRIMITIVE, TID_RELOC_PTR];
 
+/// number of words used for the header of allocated memory blocks
+const BLOCK_HEADER_SIZE: usize = 1;
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Op<T> {
     Halt,
@@ -93,6 +96,10 @@ impl TypedValue {
     pub fn ptr(p: Int, t: TypeId) -> Self {
         TypedValue(p, Type::Pointer(t))
     }
+
+    pub fn raw(&self) -> Int {
+        self.0
+    }
 }
 
 pub struct Vm<GC: GarbageCollector> {
@@ -138,30 +145,33 @@ impl<GC: GarbageCollector> Vm<GC> {
         }
     }
 
+    /** Allocate a block of the types size + BLOCK_DATA_OFFSET.
+    The first word of the block stores the type id.
+    Return pointer to the next word, where the data starts.
+    **/
     fn alloc(&mut self, tid: TypeId) -> Int {
-        /** Allocate a block of the types size + 1.
-        The first word of the block stores the type id.
-        Return pointer to the next word, where the data starts.
-        **/
         let size = self.types.size(tid);
         let ptr = self.heap.len();
 
+        // block header
         self.heap.push(tid.as_int());
+
+        // block data
         for _ in 0..size {
             self.heap.push(0);
         }
 
-        1 + ptr as Int
+        (BLOCK_HEADER_SIZE + ptr) as Int
     }
 
     fn collect_garbage(&mut self) {
-        let old_heap = std::mem::replace(&mut self.heap, vec![]);
-        let new_heap = self.gc.collect(&[self.val], old_heap);
-        self.heap = new_heap;
+        let mut roots = [self.val];
+        self.gc.collect(&mut roots, &mut self.heap, &self.types);
+        self.val = roots[0];
     }
 }
 
-struct TypeRegistry {
+pub struct TypeRegistry {
     types: HashMap<TypeId, Vec<Type>>,
 }
 
@@ -183,13 +193,34 @@ impl TypeRegistry {
 }
 
 pub trait GarbageCollector {
-    fn collect(&mut self, roots: &[TypedValue], heap: Vec<Int>) -> Vec<Int>;
+    fn collect(&mut self, roots: &mut [TypedValue], heap: &mut Vec<Int>, types: &TypeRegistry);
 }
 
 pub struct NullCollector;
 impl GarbageCollector for NullCollector {
-    fn collect(&mut self, _roots: &[TypedValue], heap: Vec<Int>) -> Vec<Int> {
-        heap
+    fn collect(&mut self, roots: &mut [TypedValue], heap: &mut Vec<Int>, types: &TypeRegistry) {
+        let mut target = vec![];
+        for x in roots {
+            if let TypedValue(p, Type::Pointer(t)) = *x {
+                self.relocate(p as usize, types.size(t), heap, &mut target);
+            }
+        }
+        *heap = target;
+    }
+}
+
+impl NullCollector {
+    fn relocate(
+        &mut self,
+        ptr: usize,
+        size: usize,
+        src: &mut Vec<Int>,
+        tgt: &mut Vec<Int>,
+    ) -> usize {
+        let new_ptr = tgt.len() + BLOCK_HEADER_SIZE;
+        let start = ptr as usize - BLOCK_HEADER_SIZE;
+        tgt.extend_from_slice(&src[start..ptr + size]);
+        new_ptr
     }
 }
 
@@ -286,7 +317,7 @@ mod tests {
         let mut vm = Vm::default();
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
-        let TypedValue(ptr, t) = vm.run(&[Op::Alloc(tid), Op::Halt]);
+        vm.run(&[Op::Alloc(tid), Op::Halt]);
         let heap_size_before_gc = vm.heap.len();
 
         vm.collect_garbage();
@@ -300,7 +331,7 @@ mod tests {
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
         let heap_size_before_alloc = vm.heap.len();
-        let TypedValue(ptr, t) = vm.run(&[Op::Alloc(tid), Op::Halt]);
+        vm.run(&[Op::Alloc(tid), Op::Halt]);
         vm.val = TypedValue::int(0);
 
         vm.collect_garbage();
