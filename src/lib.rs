@@ -19,6 +19,7 @@ pub enum Op<T> {
     Goto(T),
 
     Alloc(TypeId),
+    SetField(Int),
 
     Const(Int),
     GetObj,
@@ -38,6 +39,7 @@ impl<T> Op<T> {
             Op::Label(_) | Op::Goto(_) => panic!("Invalid conversion"),
             Op::Halt => Op::Halt,
             Op::Alloc(t) => Op::Alloc(*t),
+            Op::SetField(idx) => Op::SetField(*idx),
             Op::Const(x) => Op::Const(*x),
             Op::SetObj => Op::SetObj,
             Op::GetObj => Op::GetObj,
@@ -145,6 +147,7 @@ impl<GC: GarbageCollector> Vm<GC> {
             match op {
                 Op::Halt => return self.val,
                 Op::Alloc(tid) => self.obj = TypedValue::ptr(self.alloc(tid), tid),
+                Op::SetField(offset) => self.set_field(offset),
                 Op::Const(x) => self.val = TypedValue::int(x),
                 Op::SetObj => self.obj = self.val,
                 Op::GetObj => self.val = self.obj,
@@ -170,6 +173,10 @@ impl<GC: GarbageCollector> Vm<GC> {
         }
 
         (BLOCK_HEADER_SIZE + ptr) as Int
+    }
+
+    fn set_field(&mut self, offset: Int) {
+        self.heap[(self.obj.raw() + offset) as usize] = self.val.raw()
     }
 
     fn collect_garbage(&mut self) {
@@ -336,6 +343,25 @@ mod tests {
 
         assert_eq!(vm.heap[heap_size_before_alloc], tid.0);
         assert_eq!(vm.heap.len() - heap_size_before_alloc, 3);
+    }
+
+    #[test]
+    fn test_initialize_obj() {
+        let mut vm = Vm::default();
+        let tid = 11.into();
+        vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
+
+        vm.run(&[
+            Op::Alloc(tid),
+            Op::Const(12),
+            Op::SetField(0),
+            Op::Const(34),
+            Op::SetField(1),
+            Op::Halt,
+        ]);
+
+        assert_eq!(vm.heap.pop().unwrap(), 34);
+        assert_eq!(vm.heap.pop().unwrap(), 12);
     }
 
     #[test]
