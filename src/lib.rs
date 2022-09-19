@@ -55,7 +55,20 @@ fn find_label_offsets<T: Eq + Hash>(code: &[Op<T>]) -> HashMap<&T, Int> {
     labels
 }
 
-pub type TypeId = Int;
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct TypeId(Int);
+
+impl TypeId {
+    pub fn as_int(&self) -> Int {
+        self.0
+    }
+}
+
+impl From<Int> for TypeId {
+    fn from(id: Int) -> Self {
+        TypeId(id)
+    }
+}
 
 pub enum Type {
     Primitive,
@@ -98,7 +111,7 @@ impl Vm {
         let size = self.types.size(tid);
         let ptr = self.heap.len();
 
-        self.heap.push(tid);
+        self.heap.push(tid.as_int());
         for _ in 0..size {
             self.heap.push(0);
         }
@@ -152,14 +165,14 @@ mod tests {
     #[test]
     fn test_register_an_empty_type() {
         let mut vm = Vm::new();
-        vm.register_type(42, vec![]);
-        assert_eq!(vm.types.size(42), 0);
+        vm.register_type(42.into(), vec![]);
+        assert_eq!(vm.types.size(42.into()), 0);
     }
 
     #[test]
     fn test_register_types_with_primitive_fields() {
         let mut vm = Vm::new();
-        let (a, b) = (0, 1);
+        let (a, b) = (0.into(), 1.into());
 
         vm.register_type(a, vec![Type::Primitive]);
         vm.register_type(b, vec![Type::Primitive, Type::Primitive]);
@@ -171,7 +184,7 @@ mod tests {
     #[test]
     fn test_register_types_with_pointer_fields() {
         let mut vm = Vm::new();
-        let (a, b, c) = (0, 1, 2);
+        let (a, b, c) = (0.into(), 1.into(), 2.into());
 
         vm.register_type(a, vec![Type::Primitive]);
         vm.register_type(b, vec![Type::Pointer(a)]);
@@ -185,9 +198,9 @@ mod tests {
     #[test]
     fn test_register_recursive_type() {
         let mut vm = Vm::new();
-        let a = 0;
+        let a = 0.into();
 
-        vm.register_type(0, vec![Type::Pointer(a)]);
+        vm.register_type(a, vec![Type::Pointer(a)]);
 
         assert_eq!(vm.types.size(a), 1);
     }
@@ -204,12 +217,12 @@ mod tests {
     #[test]
     fn test_alloc_on_top_of_heap() {
         let mut vm = Vm::new();
-        let tid = 11;
+        let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
 
         let ptr = vm.run(&[Op::Alloc(tid), Op::Halt]) as usize;
 
-        assert_eq!(vm.heap[ptr-1], tid);
+        assert_eq!(vm.heap[ptr - 1], tid.0);
         assert_eq!(vm.heap.len() - ptr, 2);
     }
 }
