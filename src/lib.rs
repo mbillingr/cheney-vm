@@ -21,6 +21,8 @@ pub enum Op<T> {
     Alloc(TypeId),
 
     Const(Int),
+    GetObj,
+    SetObj,
 }
 
 impl<T> Op<T> {
@@ -37,6 +39,8 @@ impl<T> Op<T> {
             Op::Halt => Op::Halt,
             Op::Alloc(t) => Op::Alloc(*t),
             Op::Const(x) => Op::Const(*x),
+            Op::SetObj => Op::SetObj,
+            Op::GetObj => Op::GetObj,
         }
     }
 }
@@ -142,6 +146,8 @@ impl<GC: GarbageCollector> Vm<GC> {
                 Op::Halt => return self.val,
                 Op::Alloc(tid) => self.obj = TypedValue::ptr(self.alloc(tid), tid),
                 Op::Const(x) => self.val = TypedValue::int(x),
+                Op::SetObj => self.obj = self.val,
+                Op::GetObj => self.val = self.obj,
                 _ => todo!("{:?}", op),
             }
         }
@@ -301,14 +307,32 @@ mod tests {
     }
 
     #[test]
+    fn test_set_obj_to_val() {
+        let mut vm = Vm::default();
+
+        vm.run(&[Op::Const(123), Op::SetObj, Op::Halt]);
+
+        assert_eq!(vm.obj, TypedValue::int(123));
+    }
+
+    #[test]
+    fn test_set_val_to_obj() {
+        let mut vm = Vm::default();
+
+        vm.obj = TypedValue::int(456);
+        vm.run(&[Op::GetObj, Op::Halt]);
+
+        assert_eq!(vm.val, TypedValue::int(456));
+    }
+
+    #[test]
     fn test_alloc_on_top_of_heap() {
         let mut vm = Vm::default();
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
         let heap_size_before_alloc = vm.heap.len();
 
-        let TypedValue(ptr, t) = vm.run(&[Op::Alloc(tid), Op::Halt]);
-        let ptr = ptr as usize;
+        vm.run(&[Op::Alloc(tid), Op::Halt]);
 
         assert_eq!(vm.heap[heap_size_before_alloc], tid.0);
         assert_eq!(vm.heap.len() - heap_size_before_alloc, 3);
