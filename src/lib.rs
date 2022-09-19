@@ -530,4 +530,35 @@ mod tests {
         assert_eq!(vm.val, TypedValue::ptr(2, tid));
         assert_eq!(&vm.heap[1..], &[tid.0, 0, 0, tid.0, 2, 2]);
     }
+
+    #[test]
+    fn test_gc_self_referential_objects() {
+        let mut vm = Vm::default();
+        let tid = 11.into();
+        vm.register_type(tid, vec![Type::Pointer(tid), Type::Primitive]);
+        vm.run(&[
+            Op::Alloc(tid),
+            Op::GetObj,
+            Op::SetField(0),
+            Op::Const(111),
+            Op::SetField(1),
+            Op::Alloc(tid),
+            Op::GetObj,
+            Op::SetField(0),
+            Op::Const(222),
+            Op::SetField(1),
+            Op::Halt,
+        ]);
+
+        assert_eq!(&vm.heap[1..], &[tid.0, 2, 111, tid.0, 5, 222]);
+        assert_eq!(vm.obj, TypedValue::ptr(5, tid));
+        assert_eq!(vm.val, TypedValue::int(222));
+
+        // the object with 111 is not reachable from outside and should be collected
+        vm.collect_garbage();
+
+        assert_eq!(&vm.heap[1..], &[tid.0, 2, 222]);
+        assert_eq!(vm.obj, TypedValue::ptr(2, tid));
+        assert_eq!(vm.val, TypedValue::int(222));
+    }
 }
