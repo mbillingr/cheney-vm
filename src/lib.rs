@@ -70,14 +70,31 @@ impl From<Int> for TypeId {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
     Primitive,
     Pointer(TypeId),
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct TypedValue(Int, Type);
+
+impl TypedValue {
+    pub fn int(x: Int) -> Self {
+        TypedValue(x, Type::Primitive)
+    }
+
+    pub fn ptr(p: Int, t: TypeId) -> Self {
+        TypedValue(p, Type::Pointer(t))
+    }
+}
+
 pub struct Vm {
     types: TypeRegistry,
     heap: Vec<Int>,
+
+    // registers
+    val: TypedValue,
 }
 
 impl Vm {
@@ -85,6 +102,7 @@ impl Vm {
         Vm {
             types: TypeRegistry::new(),
             heap: vec![],
+            val: TypedValue::int(0),
         }
     }
 
@@ -92,16 +110,15 @@ impl Vm {
         self.types.register_type(id, fields)
     }
 
-    pub fn run(&mut self, program: &[Op<Int>]) -> Int {
-        let mut val: Int = 0;
+    pub fn run(&mut self, program: &[Op<Int>]) -> TypedValue {
         let mut ip = 0;
         loop {
             let op = program[ip];
             ip += 1;
             match op {
-                Op::Halt => return val,
-                Op::Alloc(tid) => val = self.alloc(tid),
-                Op::Const(x) => val = x,
+                Op::Halt => return self.val,
+                Op::Alloc(tid) => self.val = TypedValue::ptr(self.alloc(tid), tid),
+                Op::Const(x) => self.val = TypedValue::int(x),
                 _ => todo!("{:?}", op),
             }
         }
@@ -211,7 +228,7 @@ mod tests {
 
         let res = vm.run(&[Op::Const(42), Op::Halt]);
 
-        assert_eq!(res, 42);
+        assert_eq!(res, TypedValue::int(42));
     }
 
     #[test]
@@ -220,8 +237,10 @@ mod tests {
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
 
-        let ptr = vm.run(&[Op::Alloc(tid), Op::Halt]) as usize;
+        let TypedValue(ptr, t) = vm.run(&[Op::Alloc(tid), Op::Halt]);
+        let ptr = ptr as usize;
 
+        assert_eq!(t, Type::Pointer(tid));
         assert_eq!(vm.heap[ptr - 1], tid.0);
         assert_eq!(vm.heap.len() - ptr, 2);
     }
