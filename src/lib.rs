@@ -3,6 +3,12 @@ use std::hash::Hash;
 
 pub type Int = u64;
 
+const TID_TOMBSTONE: TypeId = TypeId(0);
+const TID_PRIMITIVE: TypeId = TypeId(1);
+const TID_RELOC_PTR: TypeId = TypeId(2);
+
+const RESERVED_TIDS: [TypeId; 3] = [TID_TOMBSTONE, TID_PRIMITIVE, TID_RELOC_PTR];
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Op<T> {
     Halt,
@@ -133,6 +139,10 @@ impl<GC: GarbageCollector> Vm<GC> {
     }
 
     fn alloc(&mut self, tid: TypeId) -> Int {
+        /** Allocate a block of the types size + 1.
+        The first word of the block stores the type id.
+        Return pointer to the next word, where the data starts.
+        **/
         let size = self.types.size(tid);
         let ptr = self.heap.len();
 
@@ -163,6 +173,7 @@ impl TypeRegistry {
     }
 
     fn register_type(&mut self, id: TypeId, fields: Vec<Type>) {
+        assert!(!RESERVED_TIDS.contains(&id));
         self.types.insert(id, fields);
     }
 
@@ -214,7 +225,7 @@ mod tests {
     #[test]
     fn test_register_types_with_primitive_fields() {
         let mut vm = Vm::default();
-        let (a, b) = (0.into(), 1.into());
+        let (a, b) = (10.into(), 11.into());
 
         vm.register_type(a, vec![Type::Primitive]);
         vm.register_type(b, vec![Type::Primitive, Type::Primitive]);
@@ -226,7 +237,7 @@ mod tests {
     #[test]
     fn test_register_types_with_pointer_fields() {
         let mut vm = Vm::default();
-        let (a, b, c) = (0.into(), 1.into(), 2.into());
+        let (a, b, c) = (10.into(), 11.into(), 12.into());
 
         vm.register_type(a, vec![Type::Primitive]);
         vm.register_type(b, vec![Type::Pointer(a)]);
@@ -240,7 +251,7 @@ mod tests {
     #[test]
     fn test_register_recursive_type() {
         let mut vm = Vm::default();
-        let a = 0.into();
+        let a = 10.into();
 
         vm.register_type(a, vec![Type::Pointer(a)]);
 
@@ -281,5 +292,19 @@ mod tests {
         vm.collect_garbage();
 
         assert_eq!(vm.heap.len(), heap_size_before_gc);
+    }
+
+    #[test]
+    fn test_gc_object_not_reachable() {
+        let mut vm = Vm::default();
+        let tid = 11.into();
+        vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
+        let heap_size_before_alloc = vm.heap.len();
+        let TypedValue(ptr, t) = vm.run(&[Op::Alloc(tid), Op::Halt]);
+        vm.val = TypedValue::int(0);
+
+        vm.collect_garbage();
+
+        assert_eq!(vm.heap.len(), heap_size_before_alloc);
     }
 }
