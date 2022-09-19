@@ -109,6 +109,7 @@ pub struct Vm<GC: GarbageCollector> {
 
     // registers
     val: TypedValue,
+    obj: TypedValue,
 }
 
 impl Default for Vm<NullCollector> {
@@ -124,6 +125,7 @@ impl<GC: GarbageCollector> Vm<GC> {
             types: TypeRegistry::new(),
             heap: vec![],
             val: TypedValue::int(0),
+            obj: TypedValue::int(0),
         }
     }
 
@@ -138,7 +140,7 @@ impl<GC: GarbageCollector> Vm<GC> {
             ip += 1;
             match op {
                 Op::Halt => return self.val,
-                Op::Alloc(tid) => self.val = TypedValue::ptr(self.alloc(tid), tid),
+                Op::Alloc(tid) => self.obj = TypedValue::ptr(self.alloc(tid), tid),
                 Op::Const(x) => self.val = TypedValue::int(x),
                 _ => todo!("{:?}", op),
             }
@@ -165,7 +167,7 @@ impl<GC: GarbageCollector> Vm<GC> {
     }
 
     fn collect_garbage(&mut self) {
-        let mut roots = [self.val];
+        let mut roots = [self.val, self.obj];
         self.gc.collect(&mut roots, &mut self.heap, &self.types);
         self.val = roots[0];
     }
@@ -303,13 +305,13 @@ mod tests {
         let mut vm = Vm::default();
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
+        let heap_size_before_alloc = vm.heap.len();
 
         let TypedValue(ptr, t) = vm.run(&[Op::Alloc(tid), Op::Halt]);
         let ptr = ptr as usize;
 
-        assert_eq!(t, Type::Pointer(tid));
-        assert_eq!(vm.heap[ptr - 1], tid.0);
-        assert_eq!(vm.heap.len() - ptr, 2);
+        assert_eq!(vm.heap[heap_size_before_alloc], tid.0);
+        assert_eq!(vm.heap.len() - heap_size_before_alloc, 3);
     }
 
     #[test]
@@ -332,7 +334,7 @@ mod tests {
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
         let heap_size_before_alloc = vm.heap.len();
         vm.run(&[Op::Alloc(tid), Op::Halt]);
-        vm.val = TypedValue::int(0);
+        vm.obj = TypedValue::int(0);
 
         vm.collect_garbage();
 
