@@ -3,6 +3,8 @@ use std::hash::Hash;
 
 pub type Int = u64;
 
+const HEAP_ADDR0_VALUE: Int = 1337; // heap address 0 is unused and always set to a constant value
+
 const TID_TOMBSTONE: TypeId = TypeId(0);
 const TID_PRIMITIVE: TypeId = TypeId(1);
 const TID_RELOC_PTR: TypeId = TypeId(2);
@@ -118,9 +120,9 @@ pub struct Vm<GC: GarbageCollector> {
     obj: TypedValue,
 }
 
-impl Default for Vm<NullCollector> {
+impl Default for Vm<CopyCollector> {
     fn default() -> Self {
-        Self::new(NullCollector)
+        Self::new(CopyCollector)
     }
 }
 
@@ -129,7 +131,7 @@ impl<GC: GarbageCollector> Vm<GC> {
         Vm {
             gc,
             types: TypeRegistry::new(),
-            heap: vec![0], // heap address 0 is always 0
+            heap: vec![HEAP_ADDR0_VALUE],
             val: TypedValue::int(0),
             obj: TypedValue::int(0),
         }
@@ -218,56 +220,82 @@ pub trait GarbageCollector {
     fn collect(&mut self, roots: &mut [TypedValue], heap: &mut Vec<Int>, types: &TypeRegistry);
 }
 
-pub struct NullCollector;
-impl GarbageCollector for NullCollector {
+pub struct CopyCollector;
+impl GarbageCollector for CopyCollector {
     fn collect(&mut self, roots: &mut [TypedValue], heap: &mut Vec<Int>, types: &TypeRegistry) {
-        let mut target = vec![0];
-        for x in roots {
-            if let TypedValue(p, Type::Pointer(t)) = *x {
-                let new_ptr = self.relocate(p as usize, types.size(t), heap, &mut target);
-                *x = TypedValue(new_ptr as Int, Type::Pointer(t));
-            }
-        }
+        let mut target = vec![HEAP_ADDR0_VALUE];
 
-        let mut trace_ptr = 1; // start at address 1, because 0 is forbidden
-        while trace_ptr < target.len() {
-            let block_t = TypeId(target[trace_ptr]);
-            trace_ptr += BLOCK_HEADER_SIZE;
+        let mut cc = CollectionContext {
+            source: heap,
+            target: &mut target,
+            types,
+        };
 
-            for field_type in types.fields(block_t) {
-                if let Type::Pointer(t) = *field_type {
-                    let p = target[trace_ptr] as usize;
-                    if p > 0 {
-                        if heap[p - BLOCK_HEADER_SIZE] == TID_RELOC_PTR.0 {
-                            target[trace_ptr] = heap[p];
-                        } else {
-                            let new_ptr = self.relocate(p, types.size(t), heap, &mut target);
-                            target[trace_ptr] = new_ptr as Int;
-                        }
-                    }
-                }
-                trace_ptr += 1;
-            }
-        }
+        cc.copy_reachable(roots);
 
         *heap = target;
     }
 }
 
-impl NullCollector {
-    fn relocate(
-        &mut self,
-        ptr: usize,
-        size: usize,
-        src: &mut Vec<Int>,
-        tgt: &mut Vec<Int>,
-    ) -> usize {
-        let new_ptr = tgt.len() + BLOCK_HEADER_SIZE;
-        let start = ptr as usize - BLOCK_HEADER_SIZE;
-        tgt.extend_from_slice(&src[start..ptr + size]);
+struct CollectionContext<'a> {
+    source: &'a mut Vec<Int>,
+    target: &'a mut Vec<Int>,
+    types: &'a TypeRegistry,
+}
 
-        src[start] = TID_RELOC_PTR.0;
-        src[ptr] = new_ptr as Int;
+impl<'s> CollectionContext<'s> {
+    fn copy_reachable(&mut self, roots: &mut [TypedValue]) {
+        let mut trace_ptr = self.target.len();
+
+        for x in roots {
+            *x = self.reloc_value(*x);
+        }
+
+        while trace_ptr < self.target.len() {
+            let block_t = TypeId(self.target[trace_ptr]);
+            trace_ptr += BLOCK_HEADER_SIZE;
+
+            for field_type in self.types.fields(block_t) {
+                self.reloc_field(trace_ptr, *field_type);
+                trace_ptr += 1;
+            }
+        }
+    }
+
+    fn reloc_value(&mut self, x: TypedValue) -> TypedValue {
+        let TypedValue(p, t) = x;
+        TypedValue(self.reloc(p, t), t)
+    }
+
+    fn reloc_field(&mut self, ptr: usize, field_type: Type) {
+        self.target[ptr] = self.reloc(self.target[ptr], field_type)
+    }
+
+    fn reloc(&mut self, p: Int, t: Type) -> Int {
+        if p == 0 {
+            return 0;
+        }
+
+        if let Type::Pointer(tid) = t {
+            let new_ptr = self.relocate_pointer(p as usize, self.types.size(tid));
+            new_ptr as Int
+        } else {
+            p
+        }
+    }
+
+    fn relocate_pointer(&mut self, ptr: usize, size: usize) -> usize {
+        if self.source[ptr - BLOCK_HEADER_SIZE] == TID_RELOC_PTR.0 {
+            return self.source[ptr] as usize;
+        }
+
+        let new_ptr = self.target.len() + BLOCK_HEADER_SIZE;
+        let start = ptr as usize - BLOCK_HEADER_SIZE;
+        self.target
+            .extend_from_slice(&self.source[start..ptr + size]);
+
+        self.source[start] = TID_RELOC_PTR.0;
+        self.source[ptr] = new_ptr as Int;
 
         new_ptr
     }
@@ -404,11 +432,11 @@ mod tests {
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
         vm.run(&[Op::Alloc(tid), Op::Halt]);
-        assert_eq!(vm.heap, &[0, tid.0, 0, 0]);
+        assert_eq!(&vm.heap[1..], &[tid.0, 0, 0]);
 
         vm.collect_garbage();
 
-        assert_eq!(vm.heap, &[0, tid.0, 0, 0]);
+        assert_eq!(&vm.heap[1..], &[tid.0, 0, 0]);
     }
 
     #[test]
@@ -418,11 +446,11 @@ mod tests {
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
         vm.run(&[Op::Alloc(tid), Op::Halt]);
         vm.obj = TypedValue::int(0);
-        assert_eq!(vm.heap, &[0, tid.0, 0, 0]);
+        assert_eq!(&vm.heap[1..], &[tid.0, 0, 0]);
 
         vm.collect_garbage();
 
-        assert_eq!(vm.heap, &[0]);
+        assert_eq!(&vm.heap[1..], &[]);
     }
 
     #[test]
@@ -441,11 +469,11 @@ mod tests {
         ]);
         vm.val = TypedValue::int(0);
         vm.obj = TypedValue::int(0);
-        assert_eq!(vm.heap, &[0, tid.0, 0, tid.0, 2]);
+        assert_eq!(&vm.heap[1..], &[tid.0, 0, tid.0, 2]);
 
         vm.collect_garbage();
 
-        assert_eq!(vm.heap, &[0]);
+        assert_eq!(&vm.heap[1..], &[]);
     }
 
     #[test]
@@ -466,13 +494,13 @@ mod tests {
 
         // the second object comes later on the heap
         assert_eq!(vm.obj, TypedValue::ptr(4, tid));
-        assert_eq!(vm.heap, &[0, tid.0, 0, tid.0, 2]);
+        assert_eq!(&vm.heap[1..], &[tid.0, 0, tid.0, 2]);
 
         vm.collect_garbage();
 
         // the second object is moved to the front of the heap
         assert_eq!(vm.obj, TypedValue::ptr(2, tid));
-        assert_eq!(vm.heap, &[0, tid.0, 4, tid.0, 0]);
+        assert_eq!(&vm.heap[1..], &[tid.0, 4, tid.0, 0]);
     }
 
     #[test]
@@ -494,12 +522,12 @@ mod tests {
 
         assert_eq!(vm.obj, TypedValue::ptr(5, tid));
         assert_eq!(vm.val, TypedValue::ptr(2, tid));
-        assert_eq!(vm.heap, &[0, tid.0, 0, 0, tid.0, 2, 2]);
+        assert_eq!(&vm.heap[1..], &[tid.0, 0, 0, tid.0, 2, 2]);
 
         vm.collect_garbage();
 
         assert_eq!(vm.obj, TypedValue::ptr(5, tid));
         assert_eq!(vm.val, TypedValue::ptr(2, tid));
-        assert_eq!(vm.heap, &[0, tid.0, 0, 0, tid.0, 2, 2]);
+        assert_eq!(&vm.heap[1..], &[tid.0, 0, 0, tid.0, 2, 2]);
     }
 }
