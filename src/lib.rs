@@ -129,7 +129,7 @@ impl<GC: GarbageCollector> Vm<GC> {
         Vm {
             gc,
             types: TypeRegistry::new(),
-            heap: vec![],
+            heap: vec![0], // heap address 0 is always 0
             val: TypedValue::int(0),
             obj: TypedValue::int(0),
         }
@@ -181,8 +181,11 @@ impl<GC: GarbageCollector> Vm<GC> {
 
     fn collect_garbage(&mut self) {
         let mut roots = [self.val, self.obj];
+
         self.gc.collect(&mut roots, &mut self.heap, &self.types);
+
         self.val = roots[0];
+        self.obj = roots[1];
     }
 }
 
@@ -205,6 +208,10 @@ impl TypeRegistry {
     fn size(&self, id: TypeId) -> usize {
         self.types[&id].len()
     }
+
+    fn fields(&self, id: TypeId) -> &[Type] {
+        &self.types[&id]
+    }
 }
 
 pub trait GarbageCollector {
@@ -214,12 +221,35 @@ pub trait GarbageCollector {
 pub struct NullCollector;
 impl GarbageCollector for NullCollector {
     fn collect(&mut self, roots: &mut [TypedValue], heap: &mut Vec<Int>, types: &TypeRegistry) {
-        let mut target = vec![];
+        let mut target = vec![0];
         for x in roots {
             if let TypedValue(p, Type::Pointer(t)) = *x {
-                self.relocate(p as usize, types.size(t), heap, &mut target);
+                let new_ptr = self.relocate(p as usize, types.size(t), heap, &mut target);
+                *x = TypedValue(new_ptr as Int, Type::Pointer(t));
             }
         }
+
+        let mut trace_ptr = 1; // start at address 1, because 0 is forbidden
+        while trace_ptr < target.len() {
+            let block_t = TypeId(target[trace_ptr]);
+            trace_ptr += BLOCK_HEADER_SIZE;
+
+            for field_type in types.fields(block_t) {
+                if let Type::Pointer(t) = *field_type {
+                    let p = target[trace_ptr] as usize;
+                    if p > 0 {
+                        if heap[p - BLOCK_HEADER_SIZE] == TID_RELOC_PTR.0 {
+                            target[trace_ptr] = heap[p];
+                        } else {
+                            let new_ptr = self.relocate(p, types.size(t), heap, &mut target);
+                            target[trace_ptr] = new_ptr as Int;
+                        }
+                    }
+                }
+                trace_ptr += 1;
+            }
+        }
+
         *heap = target;
     }
 }
@@ -235,6 +265,10 @@ impl NullCollector {
         let new_ptr = tgt.len() + BLOCK_HEADER_SIZE;
         let start = ptr as usize - BLOCK_HEADER_SIZE;
         tgt.extend_from_slice(&src[start..ptr + size]);
+
+        src[start] = TID_RELOC_PTR.0;
+        src[ptr] = new_ptr as Int;
+
         new_ptr
     }
 }
@@ -370,11 +404,11 @@ mod tests {
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
         vm.run(&[Op::Alloc(tid), Op::Halt]);
-        let heap_size_before_gc = vm.heap.len();
+        assert_eq!(vm.heap, &[0, tid.0, 0, 0]);
 
         vm.collect_garbage();
 
-        assert_eq!(vm.heap.len(), heap_size_before_gc);
+        assert_eq!(vm.heap, &[0, tid.0, 0, 0]);
     }
 
     #[test]
@@ -382,12 +416,90 @@ mod tests {
         let mut vm = Vm::default();
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
-        let heap_size_before_alloc = vm.heap.len();
         vm.run(&[Op::Alloc(tid), Op::Halt]);
         vm.obj = TypedValue::int(0);
+        assert_eq!(vm.heap, &[0, tid.0, 0, 0]);
 
         vm.collect_garbage();
 
-        assert_eq!(vm.heap.len(), heap_size_before_alloc);
+        assert_eq!(vm.heap, &[0]);
+    }
+
+    #[test]
+    fn test_gc_nested_objects_not_reachable() {
+        let mut vm = Vm::default();
+        let tid = 11.into();
+        vm.register_type(tid, vec![Type::Pointer(tid)]);
+        vm.run(&[
+            Op::Alloc(tid),
+            Op::Const(0),
+            Op::SetField(0),
+            Op::GetObj,
+            Op::Alloc(tid),
+            Op::SetField(0),
+            Op::Halt,
+        ]);
+        vm.val = TypedValue::int(0);
+        vm.obj = TypedValue::int(0);
+        assert_eq!(vm.heap, &[0, tid.0, 0, tid.0, 2]);
+
+        vm.collect_garbage();
+
+        assert_eq!(vm.heap, &[0]);
+    }
+
+    #[test]
+    fn test_gc_nested_objects_reachable() {
+        let mut vm = Vm::default();
+        let tid = 11.into();
+        vm.register_type(tid, vec![Type::Pointer(tid)]);
+        vm.run(&[
+            Op::Alloc(tid),
+            Op::Const(0),
+            Op::SetField(0),
+            Op::GetObj,
+            Op::Alloc(tid),
+            Op::SetField(0),
+            Op::Halt,
+        ]);
+        vm.val = TypedValue::int(0);
+
+        // the second object comes later on the heap
+        assert_eq!(vm.obj, TypedValue::ptr(4, tid));
+        assert_eq!(vm.heap, &[0, tid.0, 0, tid.0, 2]);
+
+        vm.collect_garbage();
+
+        // the second object is moved to the front of the heap
+        assert_eq!(vm.obj, TypedValue::ptr(2, tid));
+        assert_eq!(vm.heap, &[0, tid.0, 4, tid.0, 0]);
+    }
+
+    #[test]
+    fn test_gc_multiple_pointers_to_same_object() {
+        let mut vm = Vm::default();
+        let tid = 11.into();
+        vm.register_type(tid, vec![Type::Pointer(tid), Type::Pointer(tid)]);
+        vm.run(&[
+            Op::Alloc(tid),
+            Op::Const(0),
+            Op::SetField(0),
+            Op::SetField(1),
+            Op::GetObj,
+            Op::Alloc(tid),
+            Op::SetField(0),
+            Op::SetField(1),
+            Op::Halt,
+        ]);
+
+        assert_eq!(vm.obj, TypedValue::ptr(5, tid));
+        assert_eq!(vm.val, TypedValue::ptr(2, tid));
+        assert_eq!(vm.heap, &[0, tid.0, 0, 0, tid.0, 2, 2]);
+
+        vm.collect_garbage();
+
+        assert_eq!(vm.obj, TypedValue::ptr(5, tid));
+        assert_eq!(vm.val, TypedValue::ptr(2, tid));
+        assert_eq!(vm.heap, &[0, tid.0, 0, 0, tid.0, 2, 2]);
     }
 }
