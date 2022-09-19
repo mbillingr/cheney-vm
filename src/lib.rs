@@ -89,7 +89,8 @@ impl TypedValue {
     }
 }
 
-pub struct Vm {
+pub struct Vm<GC: GarbageCollector> {
+    gc: GC,
     types: TypeRegistry,
     heap: Vec<Int>,
 
@@ -97,9 +98,16 @@ pub struct Vm {
     val: TypedValue,
 }
 
-impl Vm {
-    pub fn new() -> Self {
+impl Default for Vm<NullCollector> {
+    fn default() -> Self {
+        Self::new(NullCollector)
+    }
+}
+
+impl<GC: GarbageCollector> Vm<GC> {
+    pub fn new(gc: GC) -> Self {
         Vm {
+            gc,
             types: TypeRegistry::new(),
             heap: vec![],
             val: TypedValue::int(0),
@@ -135,6 +143,12 @@ impl Vm {
 
         1 + ptr as Int
     }
+
+    fn collect_garbage(&mut self) {
+        let old_heap = std::mem::replace(&mut self.heap, vec![]);
+        let new_heap = self.gc.collect(&[self.val], old_heap);
+        self.heap = new_heap;
+    }
 }
 
 struct TypeRegistry {
@@ -154,6 +168,17 @@ impl TypeRegistry {
 
     fn size(&self, id: TypeId) -> usize {
         self.types[&id].len()
+    }
+}
+
+pub trait GarbageCollector {
+    fn collect(&mut self, roots: &[TypedValue], heap: Vec<Int>) -> Vec<Int>;
+}
+
+pub struct NullCollector;
+impl GarbageCollector for NullCollector {
+    fn collect(&mut self, _roots: &[TypedValue], heap: Vec<Int>) -> Vec<Int> {
+        heap
     }
 }
 
@@ -181,14 +206,14 @@ mod tests {
 
     #[test]
     fn test_register_an_empty_type() {
-        let mut vm = Vm::new();
+        let mut vm = Vm::default();
         vm.register_type(42.into(), vec![]);
         assert_eq!(vm.types.size(42.into()), 0);
     }
 
     #[test]
     fn test_register_types_with_primitive_fields() {
-        let mut vm = Vm::new();
+        let mut vm = Vm::default();
         let (a, b) = (0.into(), 1.into());
 
         vm.register_type(a, vec![Type::Primitive]);
@@ -200,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_register_types_with_pointer_fields() {
-        let mut vm = Vm::new();
+        let mut vm = Vm::default();
         let (a, b, c) = (0.into(), 1.into(), 2.into());
 
         vm.register_type(a, vec![Type::Primitive]);
@@ -214,7 +239,7 @@ mod tests {
 
     #[test]
     fn test_register_recursive_type() {
-        let mut vm = Vm::new();
+        let mut vm = Vm::default();
         let a = 0.into();
 
         vm.register_type(a, vec![Type::Pointer(a)]);
@@ -224,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_run_trivial_program() {
-        let mut vm = Vm::new();
+        let mut vm = Vm::default();
 
         let res = vm.run(&[Op::Const(42), Op::Halt]);
 
@@ -233,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_alloc_on_top_of_heap() {
-        let mut vm = Vm::new();
+        let mut vm = Vm::default();
         let tid = 11.into();
         vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
 
@@ -243,5 +268,18 @@ mod tests {
         assert_eq!(t, Type::Pointer(tid));
         assert_eq!(vm.heap[ptr - 1], tid.0);
         assert_eq!(vm.heap.len() - ptr, 2);
+    }
+
+    #[test]
+    fn test_gc_object_reachable_through_val() {
+        let mut vm = Vm::default();
+        let tid = 11.into();
+        vm.register_type(tid, vec![Type::Primitive, Type::Primitive]);
+        let TypedValue(ptr, t) = vm.run(&[Op::Alloc(tid), Op::Halt]);
+        let heap_size_before_gc = vm.heap.len();
+
+        vm.collect_garbage();
+
+        assert_eq!(vm.heap.len(), heap_size_before_gc);
     }
 }
