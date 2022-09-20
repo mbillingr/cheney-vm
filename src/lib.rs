@@ -16,6 +16,7 @@ const BLOCK_HEADER_SIZE: usize = 1;
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum R {
     Val,
+    Ptr,
     Obj,
     Arg,
     Lcl,
@@ -87,6 +88,7 @@ pub struct Vm<GC: GarbageCollector> {
 
     // registers
     val: Int,
+    ptr: Ptr,
     obj: Ptr,
     arg: Ptr,
     lcl: Ptr,
@@ -104,6 +106,7 @@ impl<GC: GarbageCollector> Vm<GC> {
             gc,
             heap: vec![HEAP_ADDR0_VALUE],
             val: 0,
+            ptr: 0,
             obj: 0,
             arg: 0,
             lcl: 0,
@@ -118,7 +121,7 @@ impl<GC: GarbageCollector> Vm<GC> {
             match op {
                 Op::Halt => return self.val,
                 Op::Goto(pos) => ip = pos as usize,
-                Op::Alloc(s) => self.obj = self.alloc(s.n_primitive(), s.n_pointer()),
+                Op::Alloc(s) => self.ptr = self.alloc(s.n_primitive(), s.n_pointer()),
                 Op::SetField(offset) => self.set_field(self.obj, offset, self.val),
                 Op::SetArg(offset) => self.set_field(self.arg, offset, self.val),
                 Op::GetLocal(offset) => self.val = self.get_field(self.lcl, offset),
@@ -127,6 +130,7 @@ impl<GC: GarbageCollector> Vm<GC> {
                 Op::Copy(R::Obj, R::Val) => self.val = self.obj,
                 Op::Copy(R::Obj, R::Arg) => self.arg = self.obj,
                 Op::Copy(R::Val, R::Obj) => self.obj = self.val,
+                Op::Copy(R::Ptr, R::Obj) => self.obj = self.ptr,
                 _ => todo!("{:?}", op),
             }
         }
@@ -160,11 +164,14 @@ impl<GC: GarbageCollector> Vm<GC> {
     }
 
     fn collect_garbage(&mut self) {
-        let mut roots = [self.obj];
+        let mut roots = [self.ptr, self.obj, self.arg, self.lcl];
 
         self.gc.collect(&mut roots, &mut self.heap);
 
-        self.obj = roots[0];
+        self.ptr = roots[0];
+        self.obj = roots[1];
+        self.arg = roots[2];
+        self.lcl = roots[3];
     }
 }
 
@@ -242,7 +249,6 @@ impl<'s> CollectionContext<'s> {
         while trace_ptr < self.target.len() {
             let rs = RecordSignature::from_int(self.target[trace_ptr]);
             trace_ptr += BLOCK_HEADER_SIZE;
-            println!("tracing @{trace_ptr}");
             trace_ptr += rs.n_primitive() as usize;
 
             for _ in 0..rs.n_pointer() {
@@ -271,7 +277,6 @@ impl<'s> CollectionContext<'s> {
 
     fn relocate_pointer(&mut self, ptr: usize) -> usize {
         if self.source[ptr - BLOCK_HEADER_SIZE] == RELOC_MARKER {
-            println!("already relocated {ptr} -> {}", self.source[ptr]);
             return self.source[ptr] as usize;
         }
 
@@ -280,8 +285,6 @@ impl<'s> CollectionContext<'s> {
         let size = RecordSignature::from_int(self.source[start]).size();
         self.target
             .extend_from_slice(&self.source[start..ptr + size]);
-
-        println!("relocating [{size}] {ptr} -> {new_ptr}");
 
         self.source[start] = RELOC_MARKER;
         self.source[ptr] = new_ptr as Int;
@@ -386,6 +389,7 @@ mod tests {
 
         vm.run(&[
             Op::Alloc(RecordSignature::new(2, 0)),
+            Op::Copy(R::Ptr, R::Obj),
             Op::Const(12),
             Op::SetField(0),
             Op::Const(34),
@@ -416,7 +420,7 @@ mod tests {
         let rs = RecordSignature::new(2, 0);
         let irs = rs.as_int();
         vm.run(&[Op::Alloc(rs), Op::Halt]);
-        vm.obj = 0;
+        vm.ptr = 0;
         assert_eq!(&vm.heap[1..], &[irs, 0, 0]);
 
         vm.collect_garbage();
@@ -431,14 +435,16 @@ mod tests {
         let irs = rs.as_int();
         vm.run(&[
             Op::Alloc(rs),
+            Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
             Op::SetField(0),
             Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
+            Op::Copy(R::Ptr, R::Obj),
             Op::SetField(0),
             Op::Halt,
         ]);
-        vm.val = 0;
+        vm.ptr = 0;
         vm.obj = 0;
         assert_eq!(&vm.heap[1..], &[irs, 0, irs, 2]);
 
@@ -454,10 +460,12 @@ mod tests {
         let irs = rs.as_int();
         vm.run(&[
             Op::Alloc(rs),
+            Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
             Op::SetField(0),
             Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
+            Op::Copy(R::Ptr, R::Obj),
             Op::SetField(0),
             Op::Halt,
         ]);
@@ -481,11 +489,13 @@ mod tests {
         let irs = rs.as_int();
         vm.run(&[
             Op::Alloc(rs),
+            Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
             Op::SetField(0),
             Op::SetField(1),
             Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
+            Op::Copy(R::Ptr, R::Obj),
             Op::SetField(0),
             Op::SetField(1),
             Op::Halt,
@@ -507,11 +517,13 @@ mod tests {
         let irs = rs.as_int();
         vm.run(&[
             Op::Alloc(rs),
+            Op::Copy(R::Ptr, R::Obj),
             Op::Copy(R::Obj, R::Val),
             Op::SetField(1),
             Op::Const(111),
             Op::SetField(0),
             Op::Alloc(rs),
+            Op::Copy(R::Ptr, R::Obj),
             Op::Copy(R::Obj, R::Val),
             Op::SetField(1),
             Op::Const(222),
