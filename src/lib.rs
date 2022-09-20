@@ -26,7 +26,9 @@ pub enum R {
 pub enum Op<T> {
     Halt,
     Label(T),
+    GetAddr(T),
     Goto(T),
+    Jump,
 
     Alloc(RecordSignature),
     SetField(Int),
@@ -47,8 +49,9 @@ impl<T> Op<T> {
 
     fn convert<U>(&self) -> Op<U> {
         match self {
-            Op::Label(_) | Op::Goto(_) => panic!("Invalid conversion"),
+            Op::Label(_) | Op::GetAddr(_) | Op::Goto(_) => panic!("Invalid conversion"),
             Op::Halt => Op::Halt,
+            Op::Jump => Op::Jump,
             Op::Alloc(s) => Op::Alloc(*s),
             Op::SetField(idx) => Op::SetField(*idx),
             Op::SetArg(idx) => Op::SetArg(*idx),
@@ -64,6 +67,7 @@ pub fn transform_labels<T: Eq + Hash>(code: &[Op<T>]) -> impl Iterator<Item = Op
     code.iter().filter_map(move |op| match op {
         Op::Label(_) => None,
         Op::Goto(label) => Some(Op::Goto(labels[label])),
+        Op::GetAddr(label) => Some(Op::GetAddr(labels[label])),
         _ => Some(op.convert()),
     })
 }
@@ -82,6 +86,7 @@ fn find_label_offsets<T: Eq + Hash>(code: &[Op<T>]) -> HashMap<&T, Int> {
     labels
 }
 
+#[derive(Debug)]
 pub struct Vm<GC: GarbageCollector> {
     gc: GC,
     heap: Vec<Int>,
@@ -120,7 +125,9 @@ impl<GC: GarbageCollector> Vm<GC> {
             ip += 1;
             match op {
                 Op::Halt => return self.val,
+                Op::GetAddr(pos) => self.val = pos,
                 Op::Goto(pos) => ip = pos as usize,
+                Op::Jump => ip = self.val as usize,
                 Op::Alloc(s) => self.ptr = self.alloc(s.n_primitive(), s.n_pointer()),
                 Op::SetField(offset) => self.set_field(self.obj, offset, self.val),
                 Op::SetArg(offset) => self.set_field(self.arg, offset, self.val),
@@ -130,6 +137,7 @@ impl<GC: GarbageCollector> Vm<GC> {
                 Op::Copy(R::Obj, R::Val) => self.val = self.obj,
                 Op::Copy(R::Obj, R::Arg) => self.arg = self.obj,
                 Op::Copy(R::Val, R::Obj) => self.obj = self.val,
+                Op::Copy(R::Ptr, R::Arg) => self.arg = self.ptr,
                 Op::Copy(R::Ptr, R::Obj) => self.obj = self.ptr,
                 _ => todo!("{:?}", op),
             }
@@ -217,6 +225,7 @@ pub trait GarbageCollector {
     fn collect(&mut self, roots: &mut [Ptr], heap: &mut Vec<Int>);
 }
 
+#[derive(Debug)]
 pub struct CopyCollector;
 impl GarbageCollector for CopyCollector {
     fn collect(&mut self, roots: &mut [Ptr], heap: &mut Vec<Int>) {
@@ -341,34 +350,6 @@ mod tests {
         vm.run(&[Op::Copy(R::Obj, R::Val), Op::Halt]);
 
         assert_eq!(vm.val, 456);
-    }
-
-    #[test]
-    fn test_function_call() {
-        let mut vm = Vm::default();
-
-        // (define (func x) (halt x)
-        // (func 99)
-        let code = transform_labels(&[
-            Op::Goto("main"),
-            // func
-            Op::Label("func"),
-            Op::Copy(R::Arg, R::Lcl),
-            Op::GetLocal(0),
-            Op::Halt,
-            // main
-            Op::Label("main"),
-            Op::Alloc(RecordSignature::new(1, 0)),
-            Op::Copy(R::Obj, R::Arg),
-            Op::Const(99),
-            Op::SetArg(0),
-            Op::Goto("func"),
-        ])
-        .collect::<Vec<_>>();
-
-        let res = vm.run(&code);
-
-        assert_eq!(res, 99);
     }
 
     #[test]
@@ -539,5 +520,73 @@ mod tests {
 
         assert_eq!(&vm.heap[1..], &[irs, 222, 2]);
         assert_eq!(vm.obj, 2);
+    }
+
+    #[test]
+    fn test_function_call_semantic() {
+        let mut vm = Vm::default();
+
+        // (define (func x) (halt x)
+        // (func 99)
+        let code = transform_labels(&[
+            Op::Goto("main"),
+            // func
+            Op::Label("func"),
+            Op::Copy(R::Arg, R::Lcl),
+            Op::GetLocal(0),
+            Op::Halt,
+            // main
+            Op::Label("main"),
+            Op::Alloc(RecordSignature::new(1, 0)),
+            Op::Copy(R::Ptr, R::Arg),
+            Op::Const(99),
+            Op::SetArg(0),
+            Op::Goto("func"),
+        ])
+        .collect::<Vec<_>>();
+
+        let res = vm.run(&code);
+
+        assert_eq!(res, 99);
+    }
+
+    #[test]
+    fn test_first_class_functions_semantic() {
+        let mut vm = Vm::default();
+
+        // (define (func x) (halt x)
+        // (define (invoke f) (f 42))
+        // (invoke f)
+        let code = transform_labels(&[
+            Op::Goto("main"),
+            // func
+            Op::Label("func"),
+            Op::Copy(R::Arg, R::Lcl),
+            Op::GetLocal(0),
+            Op::Halt,
+            // func
+            Op::Label("invoke"),
+            Op::Copy(R::Arg, R::Lcl),
+            Op::Alloc(RecordSignature::new(1, 0)),
+            Op::Copy(R::Ptr, R::Arg),
+            Op::Const(42),
+            Op::SetArg(0),
+            Op::GetLocal(0),
+            Op::Jump,
+            // main
+            Op::Label("main"),
+            Op::Alloc(RecordSignature::new(1, 0)),
+            Op::Copy(R::Ptr, R::Arg),
+            Op::GetAddr("func"),
+            Op::SetArg(0),
+            Op::Goto("invoke"),
+        ])
+        .collect::<Vec<_>>();
+
+        let res = vm.run(&code);
+
+        println!("{:?}", vm);
+
+        assert_eq!(res, 42);
     }
 }
