@@ -32,10 +32,8 @@ pub enum Op<T> {
     Jump,
 
     Alloc(RecordSignature),
-    SetField(Int),
-    SetArg(Int),
-    GetLocal(Int),
-    GetClosed(Int),
+    GetVal(R, Half),
+    PutVal(R, Half),
 
     Const(Int),
     Copy(R, R),
@@ -55,10 +53,8 @@ impl<T> Op<T> {
             Op::Halt => Op::Halt,
             Op::Jump => Op::Jump,
             Op::Alloc(s) => Op::Alloc(*s),
-            Op::SetField(idx) => Op::SetField(*idx),
-            Op::SetArg(idx) => Op::SetArg(*idx),
-            Op::GetLocal(idx) => Op::GetLocal(*idx),
-            Op::GetClosed(idx) => Op::GetClosed(*idx),
+            Op::GetVal(r, idx) => Op::GetVal(*r, *idx),
+            Op::PutVal(r, idx) => Op::PutVal(*r, *idx),
             Op::Const(x) => Op::Const(*x),
             Op::Copy(a, b) => Op::Copy(*a, *b),
         }
@@ -134,10 +130,8 @@ impl<GC: GarbageCollector> Vm<GC> {
                 Op::Goto(pos) => ip = pos as usize,
                 Op::Jump => ip = self.val as usize,
                 Op::Alloc(s) => self.ptr = self.alloc(s.n_primitive(), s.n_pointer()),
-                Op::SetField(offset) => self.set_field(self.obj, offset, self.val),
-                Op::SetArg(offset) => self.set_field(self.arg, offset, self.val),
-                Op::GetLocal(offset) => self.val = self.get_field(self.lcl, offset),
-                Op::GetClosed(offset) => self.val = self.get_field(self.cls, offset),
+                Op::GetVal(r, idx) => self.val = self.get_field(r, idx),
+                Op::PutVal(r, idx) => self.set_field(r, idx, self.val),
                 Op::Const(x) => self.val = x,
                 Op::Copy(R::Arg, R::Lcl) => self.lcl = self.arg,
                 Op::Copy(R::Obj, R::Val) => self.val = self.obj,
@@ -170,12 +164,25 @@ impl<GC: GarbageCollector> Vm<GC> {
         (BLOCK_HEADER_SIZE + ptr) as Int
     }
 
-    fn set_field(&mut self, obj: Int, offset: Int, val: Int) {
-        self.heap[(obj + offset) as usize] = val
+    fn set_field(&mut self, r: R, offset: Half, val: Int) {
+        let obj = self.get_pointer(r);
+        self.heap[obj as usize + offset as usize] = val
     }
 
-    fn get_field(&mut self, obj: Int, offset: Int) -> Int {
-        self.heap[(obj + offset) as usize]
+    fn get_field(&mut self, r: R, offset: Half) -> Int {
+        let obj = self.get_pointer(r);
+        self.heap[obj as usize + offset as usize]
+    }
+
+    fn get_pointer(&mut self, r: R) -> Ptr {
+        match r {
+            R::Val => panic!("VAL accessed as pointer"),
+            R::Ptr => self.ptr,
+            R::Obj => self.obj,
+            R::Arg => self.arg,
+            R::Lcl => self.lcl,
+            R::Cls => self.cls,
+        }
     }
 
     fn collect_garbage(&mut self) {
@@ -379,9 +386,9 @@ mod tests {
             Op::Alloc(RecordSignature::new(2, 0)),
             Op::Copy(R::Ptr, R::Obj),
             Op::Const(12),
-            Op::SetField(0),
+            Op::PutVal(R::Obj, 0),
             Op::Const(34),
-            Op::SetField(1),
+            Op::PutVal(R::Obj, 1),
             Op::Halt,
         ]);
 
@@ -425,11 +432,11 @@ mod tests {
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
-            Op::SetField(0),
+            Op::PutVal(R::Obj, 0),
             Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
-            Op::SetField(0),
+            Op::PutVal(R::Obj, 0),
             Op::Halt,
         ]);
         vm.ptr = 0;
@@ -450,11 +457,11 @@ mod tests {
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
-            Op::SetField(0),
+            Op::PutVal(R::Obj, 0),
             Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
-            Op::SetField(0),
+            Op::PutVal(R::Obj, 0),
             Op::Halt,
         ]);
         vm.val = 0;
@@ -479,13 +486,13 @@ mod tests {
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
-            Op::SetField(0),
-            Op::SetField(1),
+            Op::PutVal(R::Obj, 0),
+            Op::PutVal(R::Obj, 1),
             Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
-            Op::SetField(0),
-            Op::SetField(1),
+            Op::PutVal(R::Obj, 0),
+            Op::PutVal(R::Obj, 1),
             Op::Halt,
         ]);
 
@@ -507,15 +514,15 @@ mod tests {
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
             Op::Copy(R::Obj, R::Val),
-            Op::SetField(1),
+            Op::PutVal(R::Obj, 1),
             Op::Const(111),
-            Op::SetField(0),
+            Op::PutVal(R::Obj, 0),
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
             Op::Copy(R::Obj, R::Val),
-            Op::SetField(1),
+            Op::PutVal(R::Obj, 1),
             Op::Const(222),
-            Op::SetField(0),
+            Op::PutVal(R::Obj, 0),
             Op::Halt,
         ]);
 
@@ -540,14 +547,14 @@ mod tests {
             // func
             Op::Label("func"),
             Op::Copy(R::Arg, R::Lcl),
-            Op::GetLocal(0),
+            Op::GetVal(R::Lcl, 0),
             Op::Halt,
             // main
             Op::Label("main"),
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::Const(99),
-            Op::SetArg(0),
+            Op::PutVal(R::Arg, 0),
             Op::Goto("func"),
         ])
         .collect::<Vec<_>>();
@@ -569,7 +576,7 @@ mod tests {
             // func
             Op::Label("func"),
             Op::Copy(R::Arg, R::Lcl),
-            Op::GetLocal(0),
+            Op::GetVal(R::Lcl, 0),
             Op::Halt,
             // func
             Op::Label("invoke"),
@@ -577,15 +584,15 @@ mod tests {
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::Const(42),
-            Op::SetArg(0),
-            Op::GetLocal(0),
+            Op::PutVal(R::Arg, 0),
+            Op::GetVal(R::Lcl, 0),
             Op::Jump,
             // main
             Op::Label("main"),
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::GetAddr("func"),
-            Op::SetArg(0),
+            Op::PutVal(R::Arg, 0),
             Op::Goto("invoke"),
         ])
         .collect::<Vec<_>>();
@@ -609,15 +616,15 @@ mod tests {
             // inner
             Op::Label("inner"),
             Op::Copy(R::Arg, R::Lcl),
-            Op::GetClosed(0),
+            Op::GetVal(R::Cls, 0),
             Op::Halt,
             // outer
             Op::Label("outer"),
             Op::Copy(R::Arg, R::Lcl),
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::Copy(R::Ptr, R::Obj),
-            Op::GetLocal(1),
-            Op::SetField(0),
+            Op::GetVal(R::Lcl, 1),
+            Op::PutVal(R::Obj, 0),
             Op::Alloc(RecordSignature::new(0, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::Copy(R::Obj, R::Cls),
@@ -627,11 +634,11 @@ mod tests {
             Op::Alloc(RecordSignature::new(3, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::Const(1),
-            Op::SetArg(0),
+            Op::PutVal(R::Arg, 0),
             Op::Const(2),
-            Op::SetArg(1),
+            Op::PutVal(R::Arg, 1),
             Op::Const(3),
-            Op::SetArg(2),
+            Op::PutVal(R::Arg, 2),
             Op::Goto("outer"),
         ])
         .collect::<Vec<_>>();
