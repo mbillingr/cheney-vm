@@ -17,6 +17,8 @@ const BLOCK_HEADER_SIZE: usize = 1;
 pub enum R {
     Val,
     Obj,
+    Arg,
+    Lcl,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -27,6 +29,8 @@ pub enum Op<T> {
 
     Alloc(RecordSignature),
     SetField(Int),
+
+    GetLocal(Int),
 
     Const(Int),
     Copy(R, R),
@@ -46,6 +50,7 @@ impl<T> Op<T> {
             Op::Halt => Op::Halt,
             Op::Alloc(s) => Op::Alloc(*s),
             Op::SetField(idx) => Op::SetField(*idx),
+            Op::GetLocal(idx) => Op::GetLocal(*idx),
             Op::Const(x) => Op::Const(*x),
             Op::Copy(a, b) => Op::Copy(*a, *b),
         }
@@ -82,6 +87,8 @@ pub struct Vm<GC: GarbageCollector> {
     // registers
     val: Int,
     obj: Ptr,
+    arg: Ptr,
+    lcl: Ptr,
 }
 
 impl Default for Vm<CopyCollector> {
@@ -97,6 +104,8 @@ impl<GC: GarbageCollector> Vm<GC> {
             heap: vec![HEAP_ADDR0_VALUE],
             val: 0,
             obj: 0,
+            arg: 0,
+            lcl: 0,
         }
     }
 
@@ -107,10 +116,14 @@ impl<GC: GarbageCollector> Vm<GC> {
             ip += 1;
             match op {
                 Op::Halt => return self.val,
+                Op::Goto(pos) => ip = pos as usize,
                 Op::Alloc(s) => self.obj = self.alloc(s.n_primitive(), s.n_pointer()),
-                Op::SetField(offset) => self.set_field(offset),
+                Op::SetField(offset) => self.set_field(self.obj, offset, self.val),
+                Op::GetLocal(offset) => self.val = self.get_field(self.lcl, offset),
                 Op::Const(x) => self.val = x,
+                Op::Copy(R::Arg, R::Lcl) => self.lcl = self.arg,
                 Op::Copy(R::Obj, R::Val) => self.val = self.obj,
+                Op::Copy(R::Obj, R::Arg) => self.arg = self.obj,
                 Op::Copy(R::Val, R::Obj) => self.obj = self.val,
                 _ => todo!("{:?}", op),
             }
@@ -136,8 +149,12 @@ impl<GC: GarbageCollector> Vm<GC> {
         (BLOCK_HEADER_SIZE + ptr) as Int
     }
 
-    fn set_field(&mut self, offset: Int) {
-        self.heap[(self.obj + offset) as usize] = self.val
+    fn set_field(&mut self, obj: Int, offset: Int, val: Int) {
+        self.heap[(obj + offset) as usize] = val
+    }
+
+    fn get_field(&mut self, obj: Int, offset: Int) -> Int {
+        self.heap[(obj + offset) as usize]
     }
 
     fn collect_garbage(&mut self) {
@@ -319,6 +336,34 @@ mod tests {
         vm.run(&[Op::Copy(R::Obj, R::Val), Op::Halt]);
 
         assert_eq!(vm.val, 456);
+    }
+
+    #[test]
+    fn test_function_call() {
+        let mut vm = Vm::default();
+
+        // (define (func x) (halt x)
+        // (func 99)
+        let code = transform_labels(&[
+            Op::Goto("main"),
+            // func
+            Op::Label("func"),
+            Op::Copy(R::Arg, R::Lcl),
+            Op::GetLocal(0),
+            Op::Halt,
+            // main
+            Op::Label("main"),
+            Op::Alloc(RecordSignature::new(1, 0)),
+            Op::Const(99),
+            Op::SetField(0),
+            Op::Copy(R::Obj, R::Arg),
+            Op::Goto("func"),
+        ])
+        .collect::<Vec<_>>();
+
+        let res = vm.run(&code);
+
+        assert_eq!(res, 99);
     }
 
     #[test]
