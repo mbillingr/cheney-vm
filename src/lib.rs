@@ -70,44 +70,6 @@ fn find_label_offsets<T: Eq + Hash>(code: &[Op<T>]) -> HashMap<&T, Int> {
     labels
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct TypeId(Int);
-
-impl TypeId {
-    pub fn as_int(&self) -> Int {
-        self.0
-    }
-}
-
-impl From<Int> for TypeId {
-    fn from(id: Int) -> Self {
-        TypeId(id)
-    }
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Type {
-    Primitive,
-    Pointer(TypeId),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct TypedValue(Int, Type);
-
-impl TypedValue {
-    pub fn int(x: Int) -> Self {
-        TypedValue(x, Type::Primitive)
-    }
-
-    pub fn ptr(p: Int, t: TypeId) -> Self {
-        TypedValue(p, Type::Pointer(t))
-    }
-
-    pub fn raw(&self) -> Int {
-        self.0
-    }
-}
-
 pub struct Vm<GC: GarbageCollector> {
     gc: GC,
     heap: Vec<Int>,
