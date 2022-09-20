@@ -110,7 +110,6 @@ impl TypedValue {
 
 pub struct Vm<GC: GarbageCollector> {
     gc: GC,
-    types: TypeRegistry,
     heap: Vec<Int>,
 
     // registers
@@ -128,15 +127,10 @@ impl<GC: GarbageCollector> Vm<GC> {
     pub fn new(gc: GC) -> Self {
         Vm {
             gc,
-            types: TypeRegistry::new(),
             heap: vec![HEAP_ADDR0_VALUE],
             val: 0,
             obj: 0,
         }
-    }
-
-    pub fn register_type(&mut self, id: TypeId, fields: Vec<Type>) {
-        self.types.register_type(id, fields)
     }
 
     pub fn run(&mut self, program: &[Op<Int>]) -> Int {
@@ -223,30 +217,6 @@ impl RecordSignature {
 
     fn size(&self) -> usize {
         self.n_primitive as usize + self.n_pointer as usize
-    }
-}
-
-pub struct TypeRegistry {
-    types: HashMap<TypeId, Vec<Type>>,
-}
-
-impl TypeRegistry {
-    fn new() -> Self {
-        TypeRegistry {
-            types: HashMap::new(),
-        }
-    }
-
-    fn register_type(&mut self, id: TypeId, fields: Vec<Type>) {
-        self.types.insert(id, fields);
-    }
-
-    fn size(&self, id: TypeId) -> usize {
-        self.types[&id].len()
-    }
-
-    fn fields(&self, id: TypeId) -> &[Type] {
-        &self.types[&id]
     }
 }
 
@@ -354,49 +324,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Op::Goto(1), Op::Goto(1)]
         );
-    }
-
-    #[test]
-    fn test_register_an_empty_type() {
-        let mut vm = Vm::default();
-        vm.register_type(42.into(), vec![]);
-        assert_eq!(vm.types.size(42.into()), 0);
-    }
-
-    #[test]
-    fn test_register_types_with_primitive_fields() {
-        let mut vm = Vm::default();
-        let (a, b) = (10.into(), 11.into());
-
-        vm.register_type(a, vec![Type::Primitive]);
-        vm.register_type(b, vec![Type::Primitive, Type::Primitive]);
-
-        assert_eq!(vm.types.size(a), 1);
-        assert_eq!(vm.types.size(b), 2);
-    }
-
-    #[test]
-    fn test_register_types_with_pointer_fields() {
-        let mut vm = Vm::default();
-        let (a, b, c) = (10.into(), 11.into(), 12.into());
-
-        vm.register_type(a, vec![Type::Primitive]);
-        vm.register_type(b, vec![Type::Pointer(a)]);
-        vm.register_type(c, vec![Type::Pointer(b), Type::Pointer(b)]);
-
-        assert_eq!(vm.types.size(a), 1);
-        assert_eq!(vm.types.size(b), 1);
-        assert_eq!(vm.types.size(c), 2);
-    }
-
-    #[test]
-    fn test_register_recursive_type() {
-        let mut vm = Vm::default();
-        let a = 10.into();
-
-        vm.register_type(a, vec![Type::Pointer(a)]);
-
-        assert_eq!(vm.types.size(a), 1);
     }
 
     #[test]
@@ -509,8 +436,6 @@ mod tests {
     #[test]
     fn test_gc_nested_objects_reachable() {
         let mut vm = Vm::default();
-        let tid = 11.into();
-        vm.register_type(tid, vec![Type::Pointer(tid)]);
         let rs = RecordSignature::new(0, 1);
         let irs = rs.as_int();
         vm.run(&[
@@ -538,8 +463,6 @@ mod tests {
     #[test]
     fn test_gc_multiple_pointers_to_same_object() {
         let mut vm = Vm::default();
-        let tid = 11.into();
-        vm.register_type(tid, vec![Type::Pointer(tid), Type::Pointer(tid)]);
         let rs = RecordSignature::new(0, 2);
         let irs = rs.as_int();
         vm.run(&[
