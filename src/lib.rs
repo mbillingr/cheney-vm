@@ -29,7 +29,7 @@ pub enum Op<T> {
 
     Alloc(RecordSignature),
     SetField(Int),
-
+    SetArg(Int),
     GetLocal(Int),
 
     Const(Int),
@@ -50,6 +50,7 @@ impl<T> Op<T> {
             Op::Halt => Op::Halt,
             Op::Alloc(s) => Op::Alloc(*s),
             Op::SetField(idx) => Op::SetField(*idx),
+            Op::SetArg(idx) => Op::SetArg(*idx),
             Op::GetLocal(idx) => Op::GetLocal(*idx),
             Op::Const(x) => Op::Const(*x),
             Op::Copy(a, b) => Op::Copy(*a, *b),
@@ -119,6 +120,7 @@ impl<GC: GarbageCollector> Vm<GC> {
                 Op::Goto(pos) => ip = pos as usize,
                 Op::Alloc(s) => self.obj = self.alloc(s.n_primitive(), s.n_pointer()),
                 Op::SetField(offset) => self.set_field(self.obj, offset, self.val),
+                Op::SetArg(offset) => self.set_field(self.arg, offset, self.val),
                 Op::GetLocal(offset) => self.val = self.get_field(self.lcl, offset),
                 Op::Const(x) => self.val = x,
                 Op::Copy(R::Arg, R::Lcl) => self.lcl = self.arg,
@@ -354,9 +356,9 @@ mod tests {
             // main
             Op::Label("main"),
             Op::Alloc(RecordSignature::new(1, 0)),
-            Op::Const(99),
-            Op::SetField(0),
             Op::Copy(R::Obj, R::Arg),
+            Op::Const(99),
+            Op::SetArg(0),
             Op::Goto("func"),
         ])
         .collect::<Vec<_>>();
