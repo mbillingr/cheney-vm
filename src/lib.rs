@@ -12,6 +12,13 @@ const RELOC_MARKER: Int = Int::MAX;
 /// number of words used for the header of allocated memory blocks
 const BLOCK_HEADER_SIZE: usize = 1;
 
+/// Registers
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum R {
+    Val,
+    Obj,
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Op<T> {
     Halt,
@@ -22,8 +29,7 @@ pub enum Op<T> {
     SetField(Int),
 
     Const(Int),
-    GetObj,
-    SetObj,
+    Copy(R, R),
 }
 
 impl<T> Op<T> {
@@ -41,8 +47,7 @@ impl<T> Op<T> {
             Op::Alloc(s) => Op::Alloc(*s),
             Op::SetField(idx) => Op::SetField(*idx),
             Op::Const(x) => Op::Const(*x),
-            Op::SetObj => Op::SetObj,
-            Op::GetObj => Op::GetObj,
+            Op::Copy(a, b) => Op::Copy(*a, *b),
         }
     }
 }
@@ -105,8 +110,8 @@ impl<GC: GarbageCollector> Vm<GC> {
                 Op::Alloc(s) => self.obj = self.alloc(s.n_primitive(), s.n_pointer()),
                 Op::SetField(offset) => self.set_field(offset),
                 Op::Const(x) => self.val = x,
-                Op::SetObj => self.obj = self.val,
-                Op::GetObj => self.val = self.obj,
+                Op::Copy(R::Obj, R::Val) => self.val = self.obj,
+                Op::Copy(R::Val, R::Obj) => self.obj = self.val,
                 _ => todo!("{:?}", op),
             }
         }
@@ -301,7 +306,7 @@ mod tests {
     fn test_set_obj_to_val() {
         let mut vm = Vm::default();
 
-        vm.run(&[Op::Const(123), Op::SetObj, Op::Halt]);
+        vm.run(&[Op::Const(123), Op::Copy(R::Val, R::Obj), Op::Halt]);
 
         assert_eq!(vm.obj, 123);
     }
@@ -311,7 +316,7 @@ mod tests {
         let mut vm = Vm::default();
 
         vm.obj = 456;
-        vm.run(&[Op::GetObj, Op::Halt]);
+        vm.run(&[Op::Copy(R::Obj, R::Val), Op::Halt]);
 
         assert_eq!(vm.val, 456);
     }
@@ -381,7 +386,7 @@ mod tests {
             Op::Alloc(rs),
             Op::Const(0),
             Op::SetField(0),
-            Op::GetObj,
+            Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
             Op::SetField(0),
             Op::Halt,
@@ -404,7 +409,7 @@ mod tests {
             Op::Alloc(rs),
             Op::Const(0),
             Op::SetField(0),
-            Op::GetObj,
+            Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
             Op::SetField(0),
             Op::Halt,
@@ -432,7 +437,7 @@ mod tests {
             Op::Const(0),
             Op::SetField(0),
             Op::SetField(1),
-            Op::GetObj,
+            Op::Copy(R::Obj, R::Val),
             Op::Alloc(rs),
             Op::SetField(0),
             Op::SetField(1),
@@ -455,12 +460,12 @@ mod tests {
         let irs = rs.as_int();
         vm.run(&[
             Op::Alloc(rs),
-            Op::GetObj,
+            Op::Copy(R::Obj, R::Val),
             Op::SetField(1),
             Op::Const(111),
             Op::SetField(0),
             Op::Alloc(rs),
-            Op::GetObj,
+            Op::Copy(R::Obj, R::Val),
             Op::SetField(1),
             Op::Const(222),
             Op::SetField(0),
