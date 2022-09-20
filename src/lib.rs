@@ -20,6 +20,7 @@ pub enum R {
     Obj,
     Arg,
     Lcl,
+    Cls,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -34,6 +35,7 @@ pub enum Op<T> {
     SetField(Int),
     SetArg(Int),
     GetLocal(Int),
+    GetClosed(Int),
 
     Const(Int),
     Copy(R, R),
@@ -56,6 +58,7 @@ impl<T> Op<T> {
             Op::SetField(idx) => Op::SetField(*idx),
             Op::SetArg(idx) => Op::SetArg(*idx),
             Op::GetLocal(idx) => Op::GetLocal(*idx),
+            Op::GetClosed(idx) => Op::GetClosed(*idx),
             Op::Const(x) => Op::Const(*x),
             Op::Copy(a, b) => Op::Copy(*a, *b),
         }
@@ -97,6 +100,7 @@ pub struct Vm<GC: GarbageCollector> {
     obj: Ptr,
     arg: Ptr,
     lcl: Ptr,
+    cls: Ptr,
 }
 
 impl Default for Vm<CopyCollector> {
@@ -115,6 +119,7 @@ impl<GC: GarbageCollector> Vm<GC> {
             obj: 0,
             arg: 0,
             lcl: 0,
+            cls: 0,
         }
     }
 
@@ -132,10 +137,12 @@ impl<GC: GarbageCollector> Vm<GC> {
                 Op::SetField(offset) => self.set_field(self.obj, offset, self.val),
                 Op::SetArg(offset) => self.set_field(self.arg, offset, self.val),
                 Op::GetLocal(offset) => self.val = self.get_field(self.lcl, offset),
+                Op::GetClosed(offset) => self.val = self.get_field(self.cls, offset),
                 Op::Const(x) => self.val = x,
                 Op::Copy(R::Arg, R::Lcl) => self.lcl = self.arg,
                 Op::Copy(R::Obj, R::Val) => self.val = self.obj,
                 Op::Copy(R::Obj, R::Arg) => self.arg = self.obj,
+                Op::Copy(R::Obj, R::Cls) => self.cls = self.obj,
                 Op::Copy(R::Val, R::Obj) => self.obj = self.val,
                 Op::Copy(R::Ptr, R::Arg) => self.arg = self.ptr,
                 Op::Copy(R::Ptr, R::Obj) => self.obj = self.ptr,
@@ -585,8 +592,52 @@ mod tests {
 
         let res = vm.run(&code);
 
-        println!("{:?}", vm);
-
         assert_eq!(res, 42);
+    }
+
+    #[test]
+    fn test_closure_semantic() {
+        let mut vm = Vm::default();
+
+        // (define (outer x y z)
+        //   (define (inner)
+        //     (halt y)
+        //   (inner))
+        // (outer 1 2 3)
+        let code = transform_labels(&[
+            Op::Goto("main"),
+            // inner
+            Op::Label("inner"),
+            Op::Copy(R::Arg, R::Lcl),
+            Op::GetClosed(0),
+            Op::Halt,
+            // outer
+            Op::Label("outer"),
+            Op::Copy(R::Arg, R::Lcl),
+            Op::Alloc(RecordSignature::new(1, 0)),
+            Op::Copy(R::Ptr, R::Obj),
+            Op::GetLocal(1),
+            Op::SetField(0),
+            Op::Alloc(RecordSignature::new(0, 0)),
+            Op::Copy(R::Ptr, R::Arg),
+            Op::Copy(R::Obj, R::Cls),
+            Op::Goto("inner"),
+            // main
+            Op::Label("main"),
+            Op::Alloc(RecordSignature::new(3, 0)),
+            Op::Copy(R::Ptr, R::Arg),
+            Op::Const(1),
+            Op::SetArg(0),
+            Op::Const(2),
+            Op::SetArg(1),
+            Op::Const(3),
+            Op::SetArg(2),
+            Op::Goto("outer"),
+        ])
+        .collect::<Vec<_>>();
+
+        let res = vm.run(&code);
+
+        assert_eq!(res, 2);
     }
 }
