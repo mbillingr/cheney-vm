@@ -301,7 +301,8 @@ impl<'s> CollectionContext<'s> {
         let mut trace_ptr = self.target.len();
 
         for x in roots {
-            *x = self.reloc_value(*x);
+            let p = *x;
+            *x = self.relocate(p);
         }
 
         while trace_ptr < self.target.len() {
@@ -310,42 +311,31 @@ impl<'s> CollectionContext<'s> {
             trace_ptr += rs.n_primitive() as usize;
 
             for _ in 0..rs.n_pointer() {
-                self.reloc_field(trace_ptr);
+                self.target[trace_ptr] = self.relocate(self.target[trace_ptr]);
                 trace_ptr += 1;
             }
         }
     }
 
-    fn reloc_value(&mut self, p: Ptr) -> Ptr {
-        self.reloc(p)
-    }
+    fn relocate(&mut self, ptr: Int) -> Int {
+        let ptr = ptr as usize;
 
-    fn reloc_field(&mut self, ptr: usize) {
-        self.target[ptr] = self.reloc(self.target[ptr])
-    }
-
-    fn reloc(&mut self, p: Int) -> Int {
-        if p == 0 {
+        if ptr == 0 {
             return 0;
         }
 
-        let new_ptr = self.relocate_pointer(p as usize);
-        new_ptr as Int
-    }
-
-    fn relocate_pointer(&mut self, ptr: usize) -> usize {
         if self.source[ptr - BLOCK_HEADER_SIZE] == RELOC_MARKER {
-            return self.source[ptr] as usize;
+            return self.source[ptr];
         }
 
-        let new_ptr = self.target.len() + BLOCK_HEADER_SIZE;
-        let start = ptr as usize - BLOCK_HEADER_SIZE;
+        let new_ptr = (self.target.len() + BLOCK_HEADER_SIZE) as Int;
+        let start = ptr - BLOCK_HEADER_SIZE;
         let size = RecordSignature::from_int(self.source[start]).size();
         self.target
             .extend_from_slice(&self.source[start..ptr + size]);
 
         self.source[start] = RELOC_MARKER;
-        self.source[ptr] = new_ptr as Int;
+        self.source[ptr] = new_ptr;
 
         new_ptr
     }
