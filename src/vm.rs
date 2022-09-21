@@ -37,6 +37,14 @@ pub enum Op<T> {
 }
 
 impl<T> Op<T> {
+    pub fn label(label: impl Into<T>) -> Self {
+        Self::Label(label.into())
+    }
+
+    pub fn goto(label: impl Into<T>) -> Self {
+        Self::Goto(label.into())
+    }
+
     pub fn is_label(&self) -> bool {
         match self {
             Op::Label(_) => true,
