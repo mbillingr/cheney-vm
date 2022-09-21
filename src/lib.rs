@@ -101,9 +101,9 @@ pub struct Vm<GC: GarbageCollector> {
     cls: Ptr,
 }
 
-impl Default for Vm<CopyCollector> {
+impl Default for Vm<ChattyCollector<CopyCollector>> {
     fn default() -> Self {
-        Self::new(CopyCollector)
+        Self::new(ChattyCollector::new(CopyCollector))
     }
 }
 
@@ -204,12 +204,6 @@ impl<GC: GarbageCollector> Vm<GC> {
     }
 
     fn collect_garbage(&mut self) {
-        /*println!(
-            "Before collect: {} total, {} used, {} free",
-            self.heap.capacity(),
-            self.heap.len(),
-            self.available_heap()
-        );*/
         let mut roots = [self.ptr, self.obj, self.arg, self.lcl];
 
         self.gc.collect(&mut roots, &mut self.heap);
@@ -218,12 +212,6 @@ impl<GC: GarbageCollector> Vm<GC> {
         self.obj = roots[1];
         self.arg = roots[2];
         self.lcl = roots[3];
-        /*println!(
-            "After collect: {} total, {} used, {} free",
-            self.heap.capacity(),
-            self.heap.len(),
-            self.available_heap()
-        );*/
     }
 
     fn available_heap(&self) -> usize {
@@ -271,6 +259,29 @@ impl RecordSignature {
 
 pub trait GarbageCollector {
     fn collect(&mut self, roots: &mut [Ptr], heap: &mut Vec<Int>);
+}
+
+#[derive(Debug)]
+pub struct ChattyCollector<T: GarbageCollector> {
+    collector: T,
+}
+
+impl<T: GarbageCollector> ChattyCollector<T> {
+    pub fn new(collector: T) -> Self {
+        ChattyCollector { collector }
+    }
+}
+
+impl<T: GarbageCollector> GarbageCollector for ChattyCollector<T> {
+    fn collect(&mut self, roots: &mut [Ptr], heap: &mut Vec<Int>) {
+        let used_before = heap.len();
+        self.collector.collect(roots, heap);
+
+        let capacity = heap.capacity();
+        let freed = used_before - heap.len();
+        let available = capacity - heap.len();
+        println!("GC -- Heap size: {capacity}, {available} available ({freed} freed)");
+    }
 }
 
 #[derive(Debug)]
