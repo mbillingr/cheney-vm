@@ -88,7 +88,8 @@ fn find_label_offsets<T: Eq + Hash>(code: &[Op<T>]) -> HashMap<&T, Int> {
 }
 
 #[derive(Debug)]
-pub struct Vm<GC: GarbageCollector> {
+pub struct Vm<AC: Allocator, GC: GarbageCollector> {
+    ac: AC,
     gc: GC,
     heap: Vec<Int>,
 
@@ -101,18 +102,19 @@ pub struct Vm<GC: GarbageCollector> {
     cls: Ptr,
 }
 
-impl Default for Vm<ChattyCollector<CopyCollector>> {
+impl Default for Vm<CopyAllocator, ChattyCollector<CopyCollector>> {
     fn default() -> Self {
-        Self::new(ChattyCollector::new(CopyCollector))
+        Self::new(CopyAllocator, ChattyCollector::new(CopyCollector))
     }
 }
 
-impl<GC: GarbageCollector> Vm<GC> {
-    pub fn new(gc: GC) -> Self {
+impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
+    pub fn new(ac: AC, gc: GC) -> Self {
         let mut heap = Vec::with_capacity(INITIAL_HEAP_SIZE);
         heap.push(HEAP_ADDR0_VALUE);
 
         Vm {
+            ac,
             gc,
             heap,
             val: 0,
@@ -176,8 +178,7 @@ impl<GC: GarbageCollector> Vm<GC> {
     Return pointer to the next word, where the data starts: First all primitives, then all pointers.
     **/
     fn alloc(&mut self, n_int: Half, n_ptr: Half) -> Int {
-        let size = n_int + n_ptr;
-        let total_size = BLOCK_HEADER_SIZE + size as usize;
+        let total_size = self.ac.size_of(n_int, n_ptr);
 
         if self.available_heap() < total_size {
             self.collect_garbage();
@@ -190,17 +191,7 @@ impl<GC: GarbageCollector> Vm<GC> {
             }
         }
 
-        let ptr = self.heap.len();
-
-        // block header
-        self.heap.push(RecordSignature::new(n_int, n_ptr).as_int());
-
-        // block data
-        for _ in 0..size {
-            self.heap.push(0);
-        }
-
-        (BLOCK_HEADER_SIZE + ptr) as Int
+        self.ac.alloc(n_int, n_ptr, &mut self.heap)
     }
 
     fn collect_garbage(&mut self) {
@@ -257,8 +248,36 @@ impl RecordSignature {
     }
 }
 
+pub trait Allocator {
+    fn size_of(&self, n_int: Half, n_ptr: Half) -> usize;
+    fn alloc(&mut self, n_int: Half, n_ptr: Half, heap: &mut Vec<Int>) -> Int;
+}
+
 pub trait GarbageCollector {
     fn collect(&mut self, roots: &mut [Ptr], heap: &mut Vec<Int>);
+}
+
+/// Allocator to complement the CopyCollector
+pub struct CopyAllocator;
+impl Allocator for CopyAllocator {
+    fn size_of(&self, n_int: Half, n_ptr: Half) -> usize {
+        BLOCK_HEADER_SIZE + n_int as usize + n_ptr as usize
+    }
+
+    fn alloc(&mut self, n_int: Half, n_ptr: Half, heap: &mut Vec<Int>) -> Int {
+        let size = n_int + n_ptr;
+        let ptr = heap.len();
+
+        // block header
+        heap.push(RecordSignature::new(n_int, n_ptr).as_int());
+
+        // block data
+        for _ in 0..size {
+            heap.push(0);
+        }
+
+        (BLOCK_HEADER_SIZE + ptr) as Int
+    }
 }
 
 #[derive(Debug)]
