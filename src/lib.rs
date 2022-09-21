@@ -12,6 +12,8 @@ const RELOC_MARKER: Int = Int::MAX;
 /// number of words used for the header of allocated memory blocks
 const BLOCK_HEADER_SIZE: usize = 1;
 
+const INITIAL_HEAP_SIZE: usize = 8;
+
 /// Registers
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum R {
@@ -107,9 +109,12 @@ impl Default for Vm<CopyCollector> {
 
 impl<GC: GarbageCollector> Vm<GC> {
     pub fn new(gc: GC) -> Self {
+        let mut heap = Vec::with_capacity(INITIAL_HEAP_SIZE);
+        heap.push(HEAP_ADDR0_VALUE);
+
         Vm {
             gc,
-            heap: vec![HEAP_ADDR0_VALUE],
+            heap,
             val: 0,
             ptr: 0,
             obj: 0,
@@ -145,25 +150,6 @@ impl<GC: GarbageCollector> Vm<GC> {
         }
     }
 
-    /** Allocate a block of the types size + BLOCK_HEADER_SIZE.
-    The header stores how many primitive and pointer fields the data contains.
-    Return pointer to the next word, where the data starts: First all primitives, then all pointers.
-    **/
-    fn alloc(&mut self, n_int: Half, n_ptr: Half) -> Int {
-        let size = n_int + n_ptr;
-        let ptr = self.heap.len();
-
-        // block header
-        self.heap.push(RecordSignature::new(n_int, n_ptr).as_int());
-
-        // block data
-        for _ in 0..size {
-            self.heap.push(0);
-        }
-
-        (BLOCK_HEADER_SIZE + ptr) as Int
-    }
-
     fn set_field(&mut self, r: R, offset: Half, val: Int) {
         let obj = self.get_pointer(r);
         self.heap[obj as usize + offset as usize] = val
@@ -185,7 +171,45 @@ impl<GC: GarbageCollector> Vm<GC> {
         }
     }
 
+    /** Allocate a block of the types size + BLOCK_HEADER_SIZE.
+    The header stores how many primitive and pointer fields the data contains.
+    Return pointer to the next word, where the data starts: First all primitives, then all pointers.
+    **/
+    fn alloc(&mut self, n_int: Half, n_ptr: Half) -> Int {
+        let size = n_int + n_ptr;
+        let total_size = BLOCK_HEADER_SIZE + size as usize;
+
+        if self.available_heap() < total_size {
+            self.collect_garbage();
+
+            if self.available_heap() < total_size {
+                let wanted_cap = self.heap.capacity() * 2;
+                let needed_cap = self.heap.len() + total_size;
+                let target_cap = std::cmp::max(wanted_cap, needed_cap);
+                self.heap.reserve(target_cap - self.heap.len());
+            }
+        }
+
+        let ptr = self.heap.len();
+
+        // block header
+        self.heap.push(RecordSignature::new(n_int, n_ptr).as_int());
+
+        // block data
+        for _ in 0..size {
+            self.heap.push(0);
+        }
+
+        (BLOCK_HEADER_SIZE + ptr) as Int
+    }
+
     fn collect_garbage(&mut self) {
+        /*println!(
+            "Before collect: {} total, {} used, {} free",
+            self.heap.capacity(),
+            self.heap.len(),
+            self.available_heap()
+        );*/
         let mut roots = [self.ptr, self.obj, self.arg, self.lcl];
 
         self.gc.collect(&mut roots, &mut self.heap);
@@ -194,6 +218,16 @@ impl<GC: GarbageCollector> Vm<GC> {
         self.obj = roots[1];
         self.arg = roots[2];
         self.lcl = roots[3];
+        /*println!(
+            "After collect: {} total, {} used, {} free",
+            self.heap.capacity(),
+            self.heap.len(),
+            self.available_heap()
+        );*/
+    }
+
+    fn available_heap(&self) -> usize {
+        self.heap.capacity() - self.heap.len()
     }
 }
 
@@ -243,7 +277,8 @@ pub trait GarbageCollector {
 pub struct CopyCollector;
 impl GarbageCollector for CopyCollector {
     fn collect(&mut self, roots: &mut [Ptr], heap: &mut Vec<Int>) {
-        let mut target = vec![HEAP_ADDR0_VALUE];
+        let mut target = Vec::with_capacity(heap.capacity());
+        target.push(HEAP_ADDR0_VALUE);
 
         let mut cc = CollectionContext {
             source: heap,
@@ -534,6 +569,43 @@ mod tests {
 
         assert_eq!(&vm.heap[1..], &[irs, 222, 2]);
         assert_eq!(vm.obj, 2);
+    }
+
+    #[test]
+    fn test_heap_capacity_stabilizes_with_automatic_gc() {
+        let mut vm = Vm::default();
+        vm.heap.reserve(1000);
+        let rs = RecordSignature::new(100, 0);
+
+        let mut heap_capacities = vec![];
+
+        for _ in 0..100 {
+            vm.run(&[Op::Alloc(rs), Op::Halt]);
+            heap_capacities.push(vm.heap.capacity());
+        }
+
+        assert_eq!(heap_capacities.pop(), heap_capacities.pop());
+    }
+
+    #[test]
+    fn test_alloc_resizes_the_heap_if_data_cant_fit() {
+        let mut vm = Vm::default();
+
+        vm.alloc(1000, 0);
+
+        assert!(vm.heap.capacity() >= 1000);
+    }
+
+    #[test]
+    fn test_alloc_triggers_garbage_collection_when_heap_is_full() {
+        let mut vm = Vm::default();
+        let free = vm.available_heap();
+        assert!(free > BLOCK_HEADER_SIZE); // just to make sure the initial heap size is sane
+        vm.alloc((free - BLOCK_HEADER_SIZE) as Half, 0);
+
+        vm.alloc(0, 0);
+
+        assert_eq!(vm.available_heap(), free - BLOCK_HEADER_SIZE);
     }
 
     #[test]
