@@ -1,4 +1,4 @@
-use crate::{Allocator, GarbageCollector, Int, Ptr, RecordSignature};
+use crate::vm::{Allocator, GarbageCollector, Int, Ptr, RecordSignature};
 
 /// number of words used for the header of allocated memory blocks
 pub const BLOCK_HEADER_SIZE: usize = 1;
