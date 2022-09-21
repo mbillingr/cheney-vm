@@ -1,4 +1,4 @@
-use crate::{Allocator, GarbageCollector, Half, Int, Ptr, RecordSignature};
+use crate::{Allocator, GarbageCollector, Int, Ptr, RecordSignature};
 
 /// number of words used for the header of allocated memory blocks
 pub const BLOCK_HEADER_SIZE: usize = 1;
@@ -19,23 +19,26 @@ impl Allocator for CopyAllocator {
         heap
     }
 
-    fn size_of(&self, n_int: Half, n_ptr: Half) -> usize {
-        BLOCK_HEADER_SIZE + n_int as usize + n_ptr as usize
+    fn size_of(&self, rs: RecordSignature) -> usize {
+        BLOCK_HEADER_SIZE + rs.size()
     }
 
     /** Allocate a block of the types size + BLOCK_HEADER_SIZE.
     The header stores how many primitive and pointer fields the data contains.
     Return pointer to the next word, where the data starts: First all primitives, then all pointers.
     **/
-    fn alloc(&self, n_int: Half, n_ptr: Half, heap: &mut Vec<Int>) -> Int {
-        let size = n_int + n_ptr;
+    fn alloc(&self, rs: RecordSignature, heap: &mut Vec<Int>) -> Int {
+        if rs.size() == 0 {
+            return 0;
+        }
+
         let ptr = heap.len();
 
         // block header
-        heap.push(RecordSignature::new(n_int, n_ptr).as_int());
+        heap.push(rs.as_int());
 
         // block data
-        for _ in 0..size {
+        for _ in 0..rs.size() {
             heap.push(0);
         }
 
@@ -102,6 +105,11 @@ impl<'s> CollectionContext<'s> {
         let new_ptr = (self.target.len() + BLOCK_HEADER_SIZE) as Int;
         let start = ptr - BLOCK_HEADER_SIZE;
         let size = RecordSignature::from_int(self.source[start]).size();
+
+        if size == 0 {
+            return 0;
+        }
+
         self.target
             .extend_from_slice(&self.source[start..ptr + size]);
 
@@ -132,5 +140,146 @@ impl<T: GarbageCollector> GarbageCollector for ChattyCollector<T> {
         let freed = used_before - heap.len();
         let available = capacity - heap.len();
         println!("GC -- Heap size: {capacity}, {available} available ({freed} freed)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dont_allocate_empty_records() {
+        let mut heap = vec![];
+
+        let ptr = CopyAllocator.alloc(RecordSignature::new(0, 0), &mut heap);
+
+        assert_eq!(ptr, 0);
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn allocate_at_end_of_heap() {
+        let mut heap = vec![1, 2, 3];
+        let rs = RecordSignature::new(1, 1);
+
+        let ptr = CopyAllocator.alloc(rs, &mut heap);
+
+        assert_eq!(ptr, 4);
+        assert_eq!(heap, [1, 2, 3, rs.as_int(), 0, 0]);
+    }
+
+    #[test]
+    fn dont_relocate_null_pointers() {
+        let mut cc = CollectionContext {
+            source: &mut vec![],
+            target: &mut vec![],
+        };
+
+        let ptr = cc.relocate(0);
+
+        assert_eq!(ptr, 0);
+    }
+
+    #[test]
+    fn follow_previously_relocated_pointer() {
+        const RELOCATED_TO: Int = 7;
+        let mut cc = CollectionContext {
+            source: &mut vec![RELOC_MARKER, RELOCATED_TO],
+            target: &mut vec![],
+        };
+
+        let ptr = cc.relocate(1);
+
+        assert_eq!(ptr, RELOCATED_TO);
+    }
+
+    #[test]
+    fn relocate_to_end_of_target() {
+        const TARGET_LEN: usize = 3;
+        let rs = RecordSignature::new(3, 0).as_int();
+        let mut cc = CollectionContext {
+            source: &mut vec![rs, 41, 42, 43],
+            target: &mut vec![0; TARGET_LEN],
+        };
+
+        let ptr = cc.relocate(1) as usize;
+
+        assert_eq!(cc.target[TARGET_LEN..], [rs, 41, 42, 43]);
+        assert_eq!(cc.target[ptr], 41)
+    }
+
+    #[test]
+    fn point_to_new_location() {
+        let rs = RecordSignature::new(1, 0).as_int();
+        let mut cc = CollectionContext {
+            source: &mut vec![0, rs, 42],
+            target: &mut vec![],
+        };
+
+        cc.relocate(2);
+
+        assert_eq!(cc.source, &[0, RELOC_MARKER, 1])
+    }
+
+    #[test]
+    fn empty_structures_dont_relocate() {
+        let rs = RecordSignature::new(0, 0).as_int();
+        let mut cc = CollectionContext {
+            source: &mut vec![0, rs, rs],
+            target: &mut vec![],
+        };
+
+        let ptr1 = cc.relocate(2);
+        let ptr2 = cc.relocate(3);
+
+        assert_eq!(ptr1, 0);
+        assert_eq!(ptr2, 0);
+
+        assert_eq!(cc.source, &[0, rs, rs]);
+        assert_eq!(cc.target, &[]);
+    }
+
+    #[test]
+    fn no_roots_empty_heap() {
+        let mut cc = CollectionContext {
+            source: &mut vec![1, 2, 3, 4, 5, 6, 7],
+            target: &mut vec![],
+        };
+
+        cc.copy_reachable(&mut []);
+
+        assert_eq!(cc.target, &[]);
+    }
+
+    #[test]
+    fn copy_roots() {
+        let rs = RecordSignature::new(1, 0).as_int();
+        let mut cc = CollectionContext {
+            source: &mut vec![rs, 11, rs, 22],
+            target: &mut vec![],
+        };
+        let mut roots = [3, 1];
+
+        cc.copy_reachable(&mut roots);
+
+        assert_eq!(roots, [1, 3]);
+        assert_eq!(cc.target, &[rs, 22, rs, 11]);
+    }
+
+    #[test]
+    fn copy_reachable_objects() {
+        let rs = RecordSignature::new(0, 2).as_int();
+        let mut cc = CollectionContext {
+            source: &mut vec![
+                rs, 0, 0, rs, 0, 10, rs, 19, 0, rs, 0, 16, rs, 1, 19, rs, 0, 4, rs, 1, 7,
+            ],
+            target: &mut vec![],
+        };
+        let mut roots = [13];
+
+        cc.copy_reachable(&mut roots);
+
+        assert_eq!(roots, [1]);
+        assert_eq!(cc.target, &[rs, 4, 7, rs, 0, 0, rs, 4, 10, rs, 7, 0]);
     }
 }

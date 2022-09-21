@@ -168,7 +168,8 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
     }
 
     fn alloc(&mut self, n_int: Half, n_ptr: Half) -> Int {
-        let total_size = self.ac.size_of(n_int, n_ptr);
+        let rs = RecordSignature::new(n_int, n_ptr);
+        let total_size = self.ac.size_of(rs);
 
         if self.available_heap() < total_size {
             self.collect_garbage();
@@ -181,7 +182,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             }
         }
 
-        self.ac.alloc(n_int, n_ptr, &mut self.heap)
+        self.ac.alloc(rs, &mut self.heap)
     }
 
     fn collect_garbage(&mut self) {
@@ -240,8 +241,8 @@ impl RecordSignature {
 
 pub trait Allocator {
     fn init_heap(&self, size: usize) -> Vec<Int>;
-    fn size_of(&self, n_int: Half, n_ptr: Half) -> usize;
-    fn alloc(&self, n_int: Half, n_ptr: Half, heap: &mut Vec<Int>) -> Int;
+    fn size_of(&self, rs: RecordSignature) -> usize;
+    fn alloc(&self, rs: RecordSignature, heap: &mut Vec<Int>) -> Int;
 }
 
 pub trait GarbageCollector {
@@ -497,15 +498,15 @@ mod tests {
     fn test_alloc_triggers_garbage_collection_when_heap_is_full() {
         let mut vm = Vm::default();
         const DATA: Half = 1000;
+        const NEW_SIZE: Half = 1;
         // make sure the heap is filled
         vm.alloc(DATA, 0);
         assert_eq!(vm.available_heap(), 0);
 
-        // allocating empty object requires only space for the header, but the heap is full -> GC
-        vm.alloc(0, 0);
+        vm.alloc(NEW_SIZE, 0);
 
         // old object collected, new object only header, data space of old object now free
-        assert_eq!(vm.available_heap(), DATA as usize);
+        assert_eq!(vm.available_heap(), (DATA - NEW_SIZE) as usize);
     }
 
     #[test]
