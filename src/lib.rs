@@ -28,6 +28,7 @@ pub enum Op<T> {
     GetAddr(T),
     Goto(T),
     Jump,
+    CallBuiltin(Int),
 
     Alloc(RecordSignature),
     GetVal(R, Half),
@@ -50,6 +51,7 @@ impl<T> Op<T> {
             Op::Label(_) | Op::GetAddr(_) | Op::Goto(_) => panic!("Invalid conversion"),
             Op::Halt => Op::Halt,
             Op::Jump => Op::Jump,
+            Op::CallBuiltin(idx) => Op::CallBuiltin(*idx),
             Op::Alloc(s) => Op::Alloc(*s),
             Op::GetVal(r, idx) => Op::GetVal(*r, *idx),
             Op::PutVal(r, idx) => Op::PutVal(*r, *idx),
@@ -83,8 +85,41 @@ fn find_label_offsets<T: Eq + Hash>(code: &[Op<T>]) -> HashMap<&T, Int> {
     labels
 }
 
-#[derive(Debug)]
-pub struct Vm<AC: Allocator, GC: GarbageCollector> {
+pub struct VmContext<'a, AC, GC> {
+    vm: &'a mut Vm<AC, GC>,
+    may_alloc: bool,
+}
+
+impl<'a, AC: Allocator, GC: GarbageCollector> VmContext<'a, AC, GC> {
+    pub fn get_arg(&self, idx: usize) -> Int {
+        self.vm.get_field(R::Arg, idx as Half)
+    }
+
+    /// Warning: Calling this may invalidate pointers (because it may trigger GC).
+    ///   Implies that calling this more than once in a context is unsafe. The pointer returned
+    ///   by the first call is not rooted and will be subject to garbage collection.
+    pub fn alloc(&mut self, size: usize) -> Ptr {
+        assert!(self.may_alloc);
+        self.may_alloc = false;
+        self.vm.alloc(size as Half, 0)
+    }
+
+    pub fn as_slice(&self, ptr: Ptr) -> &[Int] {
+        let ptr = ptr as usize;
+        let rs = RecordSignature::from_int(self.vm.heap[ptr - 1]);
+        &self.vm.heap[ptr..ptr + rs.n_primitive() as usize]
+    }
+
+    pub fn as_slice_mut(&mut self, ptr: Ptr) -> &mut [Int] {
+        let ptr = ptr as usize;
+        let rs = RecordSignature::from_int(self.vm.heap[ptr - 1]);
+        &mut self.vm.heap[ptr..ptr + rs.n_primitive() as usize]
+    }
+}
+
+pub type BuiltinFunction<AC, GC> = fn(VmContext<AC, GC>) -> Int;
+
+pub struct Vm<AC, GC> {
     ac: AC,
     gc: GC,
     heap: Vec<Int>,
@@ -96,6 +131,8 @@ pub struct Vm<AC: Allocator, GC: GarbageCollector> {
     arg: Ptr,
     lcl: Ptr,
     cls: Ptr,
+
+    builtins: Vec<BuiltinFunction<AC, GC>>,
 }
 
 impl Default for Vm<CopyAllocator, ChattyCollector<CopyCollector>> {
@@ -117,6 +154,24 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             arg: 0,
             lcl: 0,
             cls: 0,
+            builtins: vec![],
+        }
+    }
+
+    pub fn register_builtin(
+        &mut self,
+        idx: Int,
+        _info: impl ToString,
+        func: BuiltinFunction<AC, GC>,
+    ) {
+        assert_eq!(idx as usize, self.builtins.len());
+        self.builtins.push(func);
+    }
+
+    pub fn make_context(&mut self) -> VmContext<AC, GC> {
+        VmContext {
+            vm: self,
+            may_alloc: true,
         }
     }
 
@@ -130,6 +185,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::GetAddr(pos) => self.val = pos,
                 Op::Goto(pos) => ip = pos as usize,
                 Op::Jump => ip = self.val as usize,
+                Op::CallBuiltin(idx) => self.val = self.builtins[idx as usize](self.make_context()),
                 Op::Alloc(s) => self.ptr = self.alloc(s.n_primitive(), s.n_pointer()),
                 Op::GetVal(r, idx) => self.val = self.get_field(r, idx),
                 Op::PutVal(r, idx) => self.set_field(r, idx, self.val),
@@ -151,12 +207,12 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
         self.heap[obj as usize + offset as usize] = val
     }
 
-    fn get_field(&mut self, r: R, offset: Half) -> Int {
+    fn get_field(&self, r: R, offset: Half) -> Int {
         let obj = self.get_pointer(r);
         self.heap[obj as usize + offset as usize]
     }
 
-    fn get_pointer(&mut self, r: R) -> Ptr {
+    fn get_pointer(&self, r: R) -> Ptr {
         match r {
             R::Val => panic!("VAL accessed as pointer"),
             R::Ptr => self.ptr,
@@ -619,5 +675,59 @@ mod tests {
         let res = vm.run(&code);
 
         assert_eq!(res, 2);
+    }
+
+    #[test]
+    fn test_run_builtin() {
+        let mut vm = Vm::default();
+        vm.register_builtin(0, "add", |ctx| ctx.get_arg(0) + ctx.get_arg(1));
+
+        let res = vm.run(&[
+            Op::Alloc(RecordSignature::new(2, 0)),
+            Op::Copy(R::Ptr, R::Arg),
+            Op::Const(10),
+            Op::PutVal(R::Arg, 0),
+            Op::Const(20),
+            Op::PutVal(R::Arg, 1),
+            Op::CallBuiltin(0),
+            Op::Halt,
+        ]);
+
+        assert_eq!(res, 30);
+    }
+
+    #[test]
+    fn test_string_lib() {
+        let mut vm = Vm::default();
+        vm.register_builtin(0, "make_str", |mut ctx| -> Int {
+            let s = "Hello, World!";
+            let ptr = ctx.alloc(s.len());
+
+            let data = ctx.as_slice_mut(ptr);
+            for (i, ch) in s.bytes().enumerate() {
+                data[i] = ch as Int;
+            }
+
+            ptr
+        });
+        vm.register_builtin(1, "print_str", |ctx| -> Int {
+            let ptr = ctx.get_arg(0);
+            for &ch in ctx.as_slice(ptr) {
+                print!("{}", ch as u8 as char);
+            }
+            println!();
+            0
+        });
+
+        vm.run(&[
+            Op::CallBuiltin(0),
+            Op::Copy(R::Val, R::Obj),
+            Op::Alloc(RecordSignature::new(1, 0)),
+            Op::Copy(R::Ptr, R::Arg),
+            Op::Copy(R::Obj, R::Val),
+            Op::PutVal(R::Arg, 0),
+            Op::CallBuiltin(1),
+            Op::Halt,
+        ]);
     }
 }
