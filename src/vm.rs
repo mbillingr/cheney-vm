@@ -201,6 +201,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::Copy(R::Obj, R::Arg) => self.arg = self.obj,
                 Op::Copy(R::Obj, R::Cls) => self.cls = self.obj,
                 Op::Copy(R::Val, R::Obj) => self.obj = self.val,
+                Op::Copy(R::Ptr, R::Val) => self.val = self.ptr,
                 Op::Copy(R::Ptr, R::Arg) => self.arg = self.ptr,
                 Op::Copy(R::Ptr, R::Obj) => self.obj = self.ptr,
                 _ => todo!("{:?}", op),

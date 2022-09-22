@@ -1,18 +1,29 @@
-use crate::vm::{Int, Op};
+use crate::vm::{Int, Op, RecordSignature, R};
+
+pub enum Type {
+    Integer,
+    Record(String),
+}
 
 trait AstNode {
     fn compile(&self) -> Vec<Op<String>>;
 }
 
 trait Expression: AstNode {}
+trait ToplevelDefinition: AstNode {}
 
 struct Program {
-    defs: Vec<ToplevelDefinition>,
+    defs: Vec<Box<dyn ToplevelDefinition>>,
 }
 
-struct ToplevelDefinition {
+struct FunctionDefinition {
     name: String,
     body: Box<dyn Expression>,
+}
+
+struct RecordDefinition {
+    name: String,
+    fields: Vec<(String, Type)>,
 }
 
 struct Constant(Int);
@@ -33,10 +44,36 @@ impl AstNode for Program {
     }
 }
 
-impl AstNode for ToplevelDefinition {
+impl ToplevelDefinition for FunctionDefinition {}
+
+impl AstNode for FunctionDefinition {
     fn compile(&self) -> Vec<Op<String>> {
         let mut code = vec![Op::label(self.name.clone())];
         code.extend(self.body.compile());
+        code.push(Op::Halt);
+        code
+    }
+}
+
+impl ToplevelDefinition for RecordDefinition {}
+
+impl AstNode for RecordDefinition {
+    fn compile(&self) -> Vec<Op<String>> {
+        let mut n_primitive = 0;
+        let mut n_pointer = 0;
+
+        for (_, t) in &self.fields {
+            match t {
+                Type::Integer => n_primitive += 1,
+                Type::Record(_) => n_pointer += 1,
+            }
+        }
+
+        let rs = RecordSignature::new(n_primitive, n_pointer);
+
+        let mut code = vec![Op::label(self.name.clone())];
+        code.push(Op::Alloc(rs));
+        code.push(Op::Copy(R::Ptr, R::Val));
         code.push(Op::Halt);
         code
     }
@@ -67,16 +104,20 @@ mod tests {
     fn run_program() {
         let program = Program {
             defs: vec![
-                ToplevelDefinition {
+                Box::new(RecordDefinition {
+                    name: "Data".to_string(),
+                    fields: vec![("x".to_string(), Type::Integer)],
+                }),
+                Box::new(FunctionDefinition {
                     name: "foo".to_string(),
                     body: Box::new(Constant(42)),
-                },
-                ToplevelDefinition {
+                }),
+                Box::new(FunctionDefinition {
                     name: "main".to_string(),
                     body: Box::new(FunCall {
-                        name: "foo".to_string(),
+                        name: "Data".to_string(),
                     }),
-                },
+                }),
             ],
         };
 
