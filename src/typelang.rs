@@ -1,6 +1,6 @@
+use crate::vm::{Half, Int, Op, RecordSignature, R};
 use std::collections::HashMap;
 use std::hash::Hash;
-use crate::vm::{Int, Op, RecordSignature, R, Half};
 
 #[derive(Debug, Clone)]
 pub enum Type {
@@ -65,9 +65,17 @@ struct ContCall {
 
 impl AstNode for Program {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let env = assoc("__halt".to_string(), (Binding::Static, Type::Continuation), env);
+        let env = assoc(
+            "__halt".to_string(),
+            (Binding::Static, Type::Continuation),
+            env,
+        );
 
-        let mut code = FunCall{name: "main".to_string(), args: vec![Box::new(Reference::new("__halt"))]}.compile(&env);
+        let mut code = FunCall {
+            name: "main".to_string(),
+            args: vec![Box::new(Reference::new("__halt"))],
+        }
+        .compile(&env);
 
         code.extend([Op::label("__halt"), Op::Halt]);
 
@@ -83,11 +91,12 @@ impl ToplevelDefinition for FunctionDefinition {}
 
 impl AstNode for FunctionDefinition {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-
         let mut local_env = env.clone();
-        for (p, t) in &self.params {
-            // todo don't bind all parameters to local 0
-            local_env = assoc(p.clone(), (Binding::Local(0), t.clone()), &local_env);
+
+        let (_, _, idxmap) = map_types_to_record_indices(self.params.iter().map(|(_, t)| t));
+
+        for ((p, t), idx) in self.params.iter().zip(idxmap) {
+            local_env = assoc(p.clone(), (Binding::Local(idx), t.clone()), &local_env);
         }
 
         let mut code = vec![Op::label(self.name.clone())];
@@ -103,17 +112,8 @@ impl ToplevelDefinition for RecordDefinition {}
 
 impl AstNode for RecordDefinition {
     fn compile(&self, _env: &Env) -> Vec<Op<String>> {
-        let mut n_primitive = 0;
-        let mut n_pointer = 0;
-
-        for (_, t) in &self.fields {
-            match t {
-                Type::Integer => n_primitive += 1,
-                Type::Record(_) => n_pointer += 1,
-                Type::Continuation => todo!(),
-                Type::Function(_) => todo!(),
-            }
-        }
+        let (n_primitive, n_pointer, _idxmap) =
+            map_types_to_record_indices(self.fields.iter().map(|(_, t)| t));
 
         let rs = RecordSignature::new(n_primitive, n_pointer);
 
@@ -165,39 +165,16 @@ impl TailExpression for FunCall {}
 
 impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let mut n_primitive = 0;
-        let mut n_pointer = 0;
-
-        for arg in &self.args {
-            match arg.type_(env) {
-                Type::Integer => n_primitive += 1,
-                Type::Record(_) => n_pointer += 1,
-                Type::Continuation => n_primitive += 1,
-                Type::Function(_) => todo!(),
-            }
-        }
+        let (n_primitive, n_pointer, idxmap) =
+            map_types_to_record_indices(self.args.iter().map(|a| a.type_(env)));
 
         let mut code = vec![];
         code.push(Op::Alloc(RecordSignature::new(n_primitive, n_pointer)));
         code.push(Op::Copy(R::Ptr, R::Arg));
 
-        let mut int_idx = 0;
-        let mut ptr_idx = n_primitive;
-
-        for arg in &self.args {
+        for (arg, idx) in self.args.iter().zip(idxmap) {
             code.extend(arg.compile(env));
-
-            match arg.type_(env) {
-                Type::Integer | Type::Continuation => {
-                    code.push(Op::PutVal(R::Arg, int_idx));
-                    int_idx += 1;
-                }
-                Type::Record(_) => {
-                    code.push(Op::PutVal(R::Arg, ptr_idx));
-                    ptr_idx += 1;
-                }
-                Type::Function(_) => todo!(),
-            }
+            code.push(Op::PutVal(R::Arg, idx));
         }
 
         code.push(Op::Goto(self.name.clone()));
@@ -222,12 +199,12 @@ impl AstNode for ContCall {
             Some((Binding::Static, Type::Continuation)) => {
                 code.extend(self.val.compile(env));
                 code.push(Op::Goto(self.name.clone()))
-            },
+            }
             Some((Binding::Local(idx), Type::Continuation)) => {
                 code.extend([Op::GetVal(R::Lcl, *idx), Op::Copy(R::Val, R::Fun)]);
                 code.extend(self.val.compile(env));
                 code.push(Op::Jump);
-            },
+            }
             _ => todo!(),
         }
 
@@ -241,7 +218,43 @@ impl Typed for ContCall {
     }
 }
 
-fn assoc<K: Eq+Hash+Clone, V: Clone>(k:K, v:V, map: &HashMap<K, V>) -> HashMap<K, V> {
+fn map_types_to_record_indices<'a>(
+    types: impl Iterator<Item = &'a Type>,
+) -> (Half, Half, Vec<Half>) {
+    let types: Vec<_> = types.collect();
+
+    let n_primitive = types
+        .iter()
+        .filter(|t| match t {
+            Type::Integer | Type::Continuation => true,
+            Type::Record(_) => false,
+            _ => todo!(),
+        })
+        .count() as Half;
+
+    let n_record = types.len() as Half - n_primitive;
+
+    let mut primitive_idx = 0;
+    let mut record_idx = n_primitive;
+
+    let mut indices = Vec::with_capacity(types.len());
+    for t in types {
+        match t {
+            Type::Integer | Type::Continuation => {
+                indices.push(primitive_idx);
+                primitive_idx += 1;
+            }
+            Type::Record(_) => {
+                indices.push(record_idx);
+                record_idx += 1;
+            }
+            _ => todo!(),
+        }
+    }
+    (n_primitive, n_record, indices)
+}
+
+fn assoc<K: Eq + Hash + Clone, V: Clone>(k: K, v: V, map: &HashMap<K, V>) -> HashMap<K, V> {
     let mut map = map.clone();
     map.insert(k, v);
     map
@@ -262,10 +275,13 @@ mod tests {
                 }),*/
                 Box::new(FunctionDefinition {
                     name: "foo".to_string(),
-                    params: vec![("k".to_string(), Type::Continuation)],
+                    params: vec![
+                        ("x".to_string(), Type::Integer),
+                        ("k".to_string(), Type::Continuation),
+                    ],
                     body: Box::new(ContCall {
                         name: "k".to_string(),
-                        val: Box::new(Constant(42)),
+                        val: Box::new(Reference::new("x")),
                     }),
                 }),
                 Box::new(FunctionDefinition {
@@ -273,7 +289,7 @@ mod tests {
                     params: vec![("k".to_string(), Type::Continuation)],
                     body: Box::new(FunCall {
                         name: "foo".to_string(),
-                        args: vec![Box::new(Reference::new("k"))]
+                        args: vec![Box::new(Constant(42)), Box::new(Reference::new("k"))],
                     }),
                 }),
             ],
