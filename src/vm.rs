@@ -11,6 +11,7 @@ const INITIAL_HEAP_SIZE: usize = 8;
 /// Registers
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum R {
+    Fun,
     Val,
     Ptr,
     Obj,
@@ -132,6 +133,7 @@ pub struct Vm<AC, GC> {
 
     // registers
     val: Int,
+    fun: Int,
     ptr: Ptr,
     obj: Ptr,
     arg: Ptr,
@@ -155,6 +157,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             gc,
             heap,
             val: 0,
+            fun: 0,
             ptr: 0,
             obj: 0,
             arg: 0,
@@ -190,17 +193,18 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::Halt => return self.val,
                 Op::GetAddr(pos) => self.val = pos,
                 Op::Goto(pos) => ip = pos as usize,
-                Op::Jump => ip = self.val as usize,
+                Op::Jump => ip = self.fun as usize,
                 Op::CallBuiltin(idx) => self.val = self.builtins[idx as usize](self.make_context()),
                 Op::Alloc(s) => self.ptr = self.alloc(s.n_primitive(), s.n_pointer()),
                 Op::GetVal(r, idx) => self.val = self.get_field(r, idx),
                 Op::PutVal(r, idx) => self.set_field(r, idx, self.val),
                 Op::Const(x) => self.val = x,
+                Op::Copy(R::Val, R::Fun) => self.fun = self.val,
+                Op::Copy(R::Val, R::Obj) => self.obj = self.val,
                 Op::Copy(R::Arg, R::Lcl) => self.lcl = self.arg,
                 Op::Copy(R::Obj, R::Val) => self.val = self.obj,
                 Op::Copy(R::Obj, R::Arg) => self.arg = self.obj,
                 Op::Copy(R::Obj, R::Cls) => self.cls = self.obj,
-                Op::Copy(R::Val, R::Obj) => self.obj = self.val,
                 Op::Copy(R::Ptr, R::Val) => self.val = self.ptr,
                 Op::Copy(R::Ptr, R::Arg) => self.arg = self.ptr,
                 Op::Copy(R::Ptr, R::Obj) => self.obj = self.ptr,
@@ -222,6 +226,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
     fn get_pointer(&self, r: R) -> Ptr {
         match r {
             R::Val => panic!("VAL accessed as pointer"),
+            R::Fun => panic!("FUN accessed as pointer"),
             R::Ptr => self.ptr,
             R::Obj => self.obj,
             R::Arg => self.arg,
@@ -622,6 +627,7 @@ mod tests {
             Op::Const(42),
             Op::PutVal(R::Arg, 0),
             Op::GetVal(R::Lcl, 0),
+            Op::Copy(R::Val, R::Fun),
             Op::Jump,
             // main
             Op::Label("main"),
