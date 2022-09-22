@@ -13,7 +13,7 @@ pub enum Type {
 #[derive(Debug, Clone)]
 pub struct FunType(Vec<Type>, Box<Type>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 enum Binding {
     Static,
     Local(Half),
@@ -29,7 +29,10 @@ trait Typed {
     fn type_<'a>(&self, env: &'a Env) -> &'a Type;
 }
 
-trait ToplevelDefinition: AstNode {}
+trait ToplevelDefinition: AstNode {
+    fn name(&self) -> &str;
+    fn type_(&self) -> &Type;
+}
 trait Expression: TailExpression {}
 trait TailExpression: AstNode + Typed {}
 
@@ -43,6 +46,7 @@ struct FunctionDefinition {
     name: String,
     params: Vec<(String, Type)>,
     body: Box<dyn TailExpression>,
+    type_: Type,
 }
 
 struct RecordDefinition {
@@ -65,11 +69,15 @@ struct ContCall {
 
 impl AstNode for Program {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let env = assoc(
+        let mut env = assoc(
             "__halt".to_string(),
             (Binding::Static, Type::Continuation),
             env,
         );
+
+        for def in &self.defs {
+            env = assoc(def.name().to_string(), (Binding::Static, def.type_().clone()), &env);
+        }
 
         let mut code = FunCall {
             name: "main".to_string(),
@@ -87,7 +95,15 @@ impl AstNode for Program {
     }
 }
 
-impl ToplevelDefinition for FunctionDefinition {}
+impl ToplevelDefinition for FunctionDefinition {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn type_(&self) -> &Type {
+        &self.type_
+    }
+}
 
 impl AstNode for FunctionDefinition {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
@@ -108,7 +124,15 @@ impl AstNode for FunctionDefinition {
     }
 }
 
-impl ToplevelDefinition for RecordDefinition {}
+impl ToplevelDefinition for RecordDefinition {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn type_(&self) -> &Type {
+        todo!()
+    }
+}
 
 impl AstNode for RecordDefinition {
     fn compile(&self, _env: &Env) -> Vec<Op<String>> {
@@ -165,6 +189,13 @@ impl TailExpression for FunCall {}
 
 impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
+
+        /*match env.get(&self.name) {
+            None => panic!("{}", self.name),
+            Some((binding, Type::Function(f))) => return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env),
+            _ => todo!(),
+        }*/
+
         let (n_primitive, n_pointer, idxmap) =
             map_types_to_record_indices(self.args.iter().map(|a| a.type_(env)));
 
@@ -192,23 +223,27 @@ impl TailExpression for ContCall {}
 
 impl AstNode for ContCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let mut code = vec![];
-
         match env.get(&self.name) {
             None => panic!("{}", self.name),
-            Some((Binding::Static, Type::Continuation)) => {
-                code.extend(self.val.compile(env));
-                code.push(Op::Goto(self.name.clone()))
-            }
-            Some((Binding::Local(idx), Type::Continuation)) => {
-                code.extend([Op::GetVal(R::Lcl, *idx), Op::Copy(R::Val, R::Fun)]);
-                code.extend(self.val.compile(env));
-                code.push(Op::Jump);
-            }
+            Some((binding, Type::Continuation)) => compile_unary_call(*binding, self.name.clone(), &*self.val, env),
             _ => todo!(),
         }
+    }
+}
 
-        code
+fn compile_unary_call(binding: Binding, name: String, val: &dyn Expression, env: &Env) -> Vec<Op<String>> {
+    match binding {
+        Binding::Static => {
+            let mut code = val.compile(env);
+            code.push(Op::Goto(name));
+            code
+        }
+        Binding::Local(idx) => {
+            let mut code = vec![Op::GetVal(R::Lcl, idx), Op::Copy(R::Val, R::Fun)];
+            code.extend(val.compile(env));
+            code.push(Op::Jump);
+            code
+        }
     }
 }
 
@@ -265,6 +300,47 @@ mod tests {
     use super::*;
     use crate::vm::{transform_labels, Vm};
 
+    macro_rules! tl {
+        (@expr $x:ident) => {
+            Reference(stringify!($x).to_string())
+        };
+
+        (@expr $x:expr) => {
+            Constant($x)
+        };
+
+        (@tail (continue $name:ident $val:tt)) => {
+            ContCall {
+                name: stringify!($name).to_string(),
+                val: Box::new(tl!(@expr $val)),
+            }
+        };
+
+        (@tail ($name:ident $($arg:tt)*)) => {
+            FunCall {
+                name: stringify!($name).to_string(),
+                args: vec![$(Box::new(tl!(@expr $arg))),*],
+            }
+        };
+
+        (@topdef (define ($name:ident $($a:ident:$t:ident)*) -> $rt:ident $body:tt)) => {
+            FunctionDefinition {
+                name: stringify!($name).to_string(),
+                params: vec![$((stringify!($a).to_string(), Type::$t)),*],
+                body: Box::new(tl![@tail $body]),
+                type_: Type::Function(FunType(vec![$(Type::$t),*], Box::new(Type::$rt)))
+            }
+        };
+
+        ($($topdef:tt)*) => {
+            Program {
+                defs: vec![$(
+                    tl!(@topdef $topdef)
+                )*],
+            }
+        };
+    }
+
     #[test]
     fn run_program() {
         let program = Program {
@@ -273,7 +349,7 @@ mod tests {
                     name: "Data".to_string(),
                     fields: vec![("x".to_string(), Type::Integer)],
                 }),*/
-                Box::new(FunctionDefinition {
+                /*Box::new(FunctionDefinition {
                     name: "foo".to_string(),
                     params: vec![
                         ("x".to_string(), Type::Integer),
@@ -283,15 +359,9 @@ mod tests {
                         name: "k".to_string(),
                         val: Box::new(Reference::new("x")),
                     }),
-                }),
-                Box::new(FunctionDefinition {
-                    name: "main".to_string(),
-                    params: vec![("k".to_string(), Type::Continuation)],
-                    body: Box::new(FunCall {
-                        name: "foo".to_string(),
-                        args: vec![Box::new(Constant(42)), Box::new(Reference::new("k"))],
-                    }),
-                }),
+                }),*/
+                Box::new(tl![@topdef (define (foo x:Integer k:Continuation) -> Integer (continue k x))]),
+                Box::new(tl![@topdef (define (main k:Continuation) -> Integer (foo 42 k))]),
             ],
         };
 
