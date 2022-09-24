@@ -41,19 +41,23 @@ trait ToplevelDefinition: AstNode {
     fn name(&self) -> &str;
     fn type_(&self) -> &Type;
 }
-trait Expression: TailExpression {}
-trait TailExpression: AstNode + Typed {}
+trait Expression: AstNode + Typed {}
+trait TailStatement: AstNode + Typed {}
 
-impl<T: Expression> TailExpression for T {}
+impl<T: TailStatement> Typed for T {
+    fn type_<'a>(&self, _env: &'a Env) -> &'a Type {
+        &Type::Empty
+    }
+}
 
 struct Program {
     defs: Vec<Box<dyn ToplevelDefinition>>,
 }
 
-struct FunctionDefinition {
+struct FunctionDefinition<B: TailStatement> {
     name: String,
     params: Vec<(String, Type)>,
-    body: Box<dyn TailExpression>,
+    body: B,
     type_: Type,
 }
 
@@ -117,7 +121,7 @@ impl Program {
     }
 }
 
-impl ToplevelDefinition for FunctionDefinition {
+impl<B: TailStatement> ToplevelDefinition for FunctionDefinition<B> {
     fn name(&self) -> &str {
         &self.name
     }
@@ -127,7 +131,7 @@ impl ToplevelDefinition for FunctionDefinition {
     }
 }
 
-impl AstNode for FunctionDefinition {
+impl<B: TailStatement> AstNode for FunctionDefinition<B> {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
         // calling convention:
         //   unary function: VAL -> P00
@@ -157,7 +161,7 @@ impl AstNode for FunctionDefinition {
     }
 }
 
-impl FunctionDefinition {
+impl<B: TailStatement> FunctionDefinition<B> {
     fn extend_env(&self, env: &Env) -> Env {
         let mut env = env.clone();
 
@@ -246,7 +250,7 @@ impl Typed for Reference {
     }
 }
 
-impl TailExpression for FunCall {}
+impl TailStatement for FunCall {}
 
 impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
@@ -297,16 +301,10 @@ impl AstNode for FunCall {
     }
 }
 
-impl Typed for FunCall {
-    fn type_<'a>(&self, _env: &'a Env) -> &'a Type {
-        &Type::Empty
-    }
-}
-
-fn compile_unary_call(
+fn compile_unary_call<E: Expression + ?Sized>(
     binding: Binding,
     name: String,
-    val: &dyn Expression,
+    val: &E,
     env: &Env,
 ) -> Vec<Op<String>> {
     match binding {
@@ -392,7 +390,7 @@ mod tests {
             FunctionDefinition {
                 name: stringify!($name).to_string(),
                 params: vec![$((stringify!($a).to_string(), $t)),*],
-                body: Box::new(tl![@tail $body]),
+                body: tl![@tail $body],
                 type_: Type::Function(FunType(vec![$($t),*]))
             }
         };
