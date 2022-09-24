@@ -7,7 +7,6 @@ pub enum Type {
     Empty,
     Integer,
     Record(String),
-    Continuation(Box<Type>),
     Function(FunType),
 }
 
@@ -102,7 +101,7 @@ impl Program {
     fn make_env(&self, env: &Env) -> Env {
         let mut env = assoc(
             "__halt".to_string(),
-            (Binding::Static, Type::Continuation(Box::new(Type::Integer))),
+            (Binding::Static, Type::continuation(Type::Integer)),
             env,
         );
 
@@ -253,9 +252,6 @@ impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
         match env.get(&self.name) {
             None => panic!("{}", self.name),
-            Some((binding, Type::Continuation(_))) => {
-                return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env)
-            }
             Some((binding, Type::Function(f))) if f.0.len() == 1 => {
                 return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env)
             }
@@ -296,11 +292,6 @@ impl AstNode for FunCall {
                     assert_eq!(arg.type_(env), param_type);
                 }
             }
-            Some((_, Type::Continuation(t))) => {
-                assert_eq!(self.args.len(), 1);
-                self.args[0].check(env);
-                assert_eq!(self.args[0].type_(env), &**t);
-            }
             _ => todo!(),
         }
     }
@@ -311,7 +302,6 @@ impl Typed for FunCall {
         &Type::Empty
     }
 }
-
 
 fn compile_unary_call(
     binding: Binding,
@@ -343,7 +333,7 @@ fn map_types_to_record_indices<'a>(
     let n_primitive = types
         .iter()
         .filter(|t| match t {
-            Type::Integer | Type::Continuation(_) | Type::Function(_) => true,
+            Type::Integer | Type::Function(_) => true,
             Type::Record(_) => false,
             _ => todo!(),
         })
@@ -357,7 +347,7 @@ fn map_types_to_record_indices<'a>(
     let mut indices = Vec::with_capacity(types.len());
     for t in types {
         match t {
-            Type::Integer | Type::Continuation(_) | Type::Function(_) => {
+            Type::Integer | Type::Function(_) => {
                 indices.push(primitive_idx);
                 primitive_idx += 1;
             }
