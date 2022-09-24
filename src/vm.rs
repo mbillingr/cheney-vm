@@ -197,7 +197,6 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
     }
 
     pub fn run(&mut self, program: &[Op<Int>]) -> Int {
-        println!("{program:?}");
         let mut ip = 0;
         loop {
             let op = program[ip];

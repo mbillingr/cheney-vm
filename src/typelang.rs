@@ -1,10 +1,12 @@
 use crate::vm::{Half, Int, Op, RecordSignature, R};
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::atomic::AtomicU64;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Type {
     Empty,
+    Boolean,
     Integer,
     Record(String),
     Function(FunType),
@@ -34,7 +36,7 @@ trait AstNode {
 }
 
 trait Typed {
-    fn type_<'a>(&self, env: &'a Env) -> &'a Type;
+    fn type_<'a, 'b: 'a>(&'b self, env: &'a Env) -> &'a Type;
 }
 
 trait ToplevelDefinition: AstNode {
@@ -45,7 +47,7 @@ trait Expression: AstNode + Typed {}
 trait TailStatement: AstNode + Typed {}
 
 impl<T: TailStatement> Typed for T {
-    fn type_<'a>(&self, _env: &'a Env) -> &'a Type {
+    fn type_<'a, 'b: 'a>(&'b self, _env: &'a Env) -> &'a Type {
         &Type::Empty
     }
 }
@@ -66,8 +68,18 @@ struct RecordDefinition {
     fields: Vec<(String, Type)>,
 }
 
-struct Constant(Int);
+struct Constant(Int, Type);
 struct Reference(String);
+struct ConditionalExpression<A: Expression, B: Expression, C: Expression> {
+    condition: A,
+    consequence: B,
+    alternative: C,
+}
+struct ConditionalStatement<A: Expression, B: TailStatement, C: TailStatement> {
+    condition: A,
+    consequence: B,
+    alternative: C,
+}
 
 struct FunCall {
     name: String,
@@ -218,8 +230,8 @@ impl AstNode for Constant {
 }
 
 impl Typed for Constant {
-    fn type_<'a>(&self, _env: &'a Env) -> &'a Type {
-        &Type::Integer
+    fn type_<'a, 'b: 'a>(&'b self, _env: &'a Env) -> &'a Type {
+        &self.1
     }
 }
 
@@ -245,8 +257,73 @@ impl AstNode for Reference {
 }
 
 impl Typed for Reference {
-    fn type_<'a>(&self, env: &'a Env) -> &'a Type {
+    fn type_<'a, 'b: 'a>(&'b self, env: &'a Env) -> &'a Type {
         &env[&self.0].1
+    }
+}
+
+impl<A: Expression, B: Expression, C: Expression> Expression for ConditionalExpression<A, B, C> {}
+
+impl<A: Expression, B: Expression, C: Expression> AstNode for ConditionalExpression<A, B, C> {
+    fn compile(&self, env: &Env) -> Vec<Op<String>> {
+        let cond = self.condition.compile(env);
+        let cons = self.consequence.compile(env);
+        let alt = self.alternative.compile(env);
+
+        let elif = unique_label("elif");
+        let endif = unique_label("endif");
+
+        let mut code = cond;
+        code.push(Op::goto_zero(elif.clone()));
+        code.extend(cons);
+        code.push(Op::goto(endif.clone()));
+        code.push(Op::label(elif));
+        code.extend(alt);
+        code.push(Op::label(endif));
+        code
+    }
+
+    fn check(&self, env: &Env) {
+        self.condition.check(env);
+        self.consequence.check(env);
+        self.alternative.check(env);
+        assert_eq!(self.condition.type_(env), &Type::Boolean);
+        assert_eq!(self.consequence.type_(env), self.alternative.type_(env));
+    }
+}
+
+impl<A: Expression, B: Expression, C: Expression> Typed for ConditionalExpression<A, B, C> {
+    fn type_<'a, 'b: 'a>(&'b self, env: &'a Env) -> &'a Type {
+        self.consequence.type_(env)
+    }
+}
+
+impl<A: Expression, B: TailStatement, C: TailStatement> TailStatement
+    for ConditionalStatement<A, B, C>
+{
+}
+
+impl<A: Expression, B: TailStatement, C: TailStatement> AstNode for ConditionalStatement<A, B, C> {
+    fn compile(&self, env: &Env) -> Vec<Op<String>> {
+        let cond = self.condition.compile(env);
+        let cons = self.consequence.compile(env);
+        let alt = self.alternative.compile(env);
+
+        let elif = unique_label("else");
+
+        let mut code = cond;
+        code.push(Op::goto_zero(elif.clone()));
+        code.extend(cons); // no need to explicitly jump because the tailstatements will
+        code.push(Op::label(elif));
+        code.extend(alt);
+        code
+    }
+
+    fn check(&self, env: &Env) {
+        self.condition.check(env);
+        self.consequence.check(env);
+        self.alternative.check(env);
+        assert_eq!(self.condition.type_(env), &Type::Boolean);
     }
 }
 
@@ -365,18 +442,49 @@ fn assoc<K: Eq + Hash + Clone, V: Clone>(k: K, v: V, map: &HashMap<K, V>) -> Has
     map
 }
 
+fn unique_label(name: &str) -> String {
+    let n = LABEL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("{}-{}", name, n)
+}
+
+static LABEL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vm::{transform_labels, Vm};
 
     macro_rules! tl {
+        (@expr (if $cond:tt $cons:tt $alt:tt)) => {
+            ConditionalExpression {
+                condition: tl!(@expr $cond),
+                consequence: tl!(@expr $cons),
+                alternative: tl!(@expr $alt),
+            }
+        };
+
+        (@expr true) => {
+            Constant(Int::MAX, Type::Boolean)
+        };
+
+        (@expr false) => {
+            Constant(0, Type::Boolean)
+        };
+
         (@expr $x:ident) => {
             Reference(stringify!($x).to_string())
         };
 
         (@expr $x:expr) => {
-            Constant($x)
+            Constant($x, Type::Integer)
+        };
+
+        (@tail (if $cond:tt $cons:tt $alt:tt)) => {
+            ConditionalStatement {
+                condition: tl!(@expr $cond),
+                consequence: tl!(@tail $cons),
+                alternative: tl!(@tail $alt),
+            }
         };
 
         (@tail ($name:ident $($arg:tt)*)) => {
@@ -413,9 +521,9 @@ mod tests {
                 fields: vec![("x".to_string(), Type::Integer)],
             }),*/
             (define (foo x:Integer k:Type::continuation(Integer))
-                (k x))
+                (if false (k x) (k x)))
             (define (main k:Type::continuation(Integer))
-                (foo 42 k))
+                (foo (if true 42 42) k))
         };
         program.check(&HashMap::new());
 
