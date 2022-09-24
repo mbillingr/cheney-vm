@@ -1,4 +1,4 @@
-use crate::vm::{Half, Int, Op, RecordSignature, R};
+use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm, R};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::AtomicU64;
@@ -84,6 +84,12 @@ struct ConditionalStatement<A: Expression, B: TailStatement, C: TailStatement> {
 struct FunCall {
     name: String,
     args: Vec<Box<dyn Expression>>,
+}
+
+struct Operation<A: Expression, B: Expression>(Operator, A, B);
+
+enum Operator {
+    LessThan,
 }
 
 impl AstNode for Program {
@@ -400,6 +406,33 @@ fn compile_unary_call<E: Expression + ?Sized>(
     }
 }
 
+impl<A: Expression, B: Expression> Expression for Operation<A, B> {}
+
+impl<A: Expression, B: Expression> AstNode for Operation<A, B> {
+    fn compile(&self, env: &Env) -> Vec<Op<String>> {
+        todo!()
+    }
+
+    fn check(&self, env: &Env) {
+        self.1.check(env);
+        self.2.check(env);
+        match self.0 {
+            Operator::LessThan => assert_eq!(
+                (self.1.type_(env), self.2.type_(env)),
+                (&Type::Integer, &Type::Integer)
+            ),
+        }
+    }
+}
+
+impl<A: Expression, B: Expression> Typed for Operation<A, B> {
+    fn type_<'a, 'b: 'a>(&'b self, env: &'a Env) -> &'a Type {
+        match self.0 {
+            Operator::LessThan => &Type::Boolean,
+        }
+    }
+}
+
 fn map_types_to_record_indices<'a>(
     types: impl Iterator<Item = &'a Type>,
 ) -> (Half, Half, Vec<Half>) {
@@ -449,6 +482,18 @@ fn unique_label(name: &str) -> String {
 
 static LABEL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+const BUILTIN_LT: Int = 0;
+
+fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
+    vm.register_builtin(BUILTIN_LT, "<", |ctx| {
+        if ctx.get_arg(0) < ctx.get_arg(1) {
+            Int::MAX
+        } else {
+            0
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +506,14 @@ mod tests {
                 consequence: tl!(@expr $cons),
                 alternative: tl!(@expr $alt),
             }
+        };
+
+        (@expr (< $a:tt $b:tt)) => {
+            Operation(
+                Operator::LessThan,
+                tl!(@expr $a),
+                tl!(@expr $b)
+            )
         };
 
         (@expr true) => {
@@ -539,4 +592,42 @@ mod tests {
 
         assert_eq!(res, 42);
     }
+
+    #[test]
+    fn fibonacci() {
+        use Type::*;
+        let program = tl! {
+            (define (fib n:Integer k:Type::continuation(Integer))
+                (if (< n 2)
+                    (k 1)
+                    (k 10)))
+            (define (main k:Type::continuation(Integer))
+                (fib 5 k))
+        };
+        program.check(&HashMap::new());
+
+        let code = program.compile(&HashMap::new());
+        for op in &code {
+            println!("{:?}", op);
+        }
+
+        let code = transform_labels(&code).collect::<Vec<_>>();
+
+        let mut vm = Vm::default();
+        let res = vm.run(&code);
+
+        assert_eq!(res, 42);
+    }
 }
+
+/*  CPS fibonacci
+(define (fib n k)
+  (if (< n 2)
+      (k 1)
+      (fib (- n 1)
+           (lambda (n1)
+                   (fib (- n 2)
+                        (lambda (n2)
+                                (k (+ n1 n2))))))))
+
+ */
