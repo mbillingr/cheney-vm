@@ -37,6 +37,9 @@ pub enum Op<T> {
 
     Const(Int),
     Copy(R, R),
+
+    PushVal,
+    PopVal,
 }
 
 impl<T> Op<T> {
@@ -71,6 +74,8 @@ impl<T> Op<T> {
             Op::PutVal(r, idx) => Op::PutVal(*r, *idx),
             Op::Const(x) => Op::Const(*x),
             Op::Copy(a, b) => Op::Copy(*a, *b),
+            Op::PushVal => Op::PushVal,
+            Op::PopVal => Op::PopVal,
         }
     }
 }
@@ -106,8 +111,8 @@ pub struct VmContext<'a, AC, GC> {
 }
 
 impl<'a, AC: Allocator, GC: GarbageCollector> VmContext<'a, AC, GC> {
-    pub fn get_arg(&self, idx: usize) -> Int {
-        self.vm.get_field(R::Arg, idx as Half)
+    pub fn pop_val(&mut self) -> Int {
+        self.vm.val_stack.pop().unwrap()
     }
 
     /// Warning: Calling this may invalidate pointers (because it may trigger GC).
@@ -139,6 +144,8 @@ pub struct Vm<AC, GC> {
     gc: GC,
     heap: Vec<Int>,
 
+    val_stack: Vec<Int>,
+
     // registers
     //  note: 1. Ptr registers must never set to an integer value
     //        2. Int registers must not contain pointers prior to allocation/gc
@@ -167,6 +174,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             ac,
             gc,
             heap,
+            val_stack: vec![],
             val: 0,
             fun: 0,
             p00: 0,
@@ -227,6 +235,8 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::Copy(R::Ptr, R::Val) => self.val = self.ptr,
                 Op::Copy(R::Ptr, R::Arg) => self.arg = self.ptr,
                 Op::Copy(R::Ptr, R::Obj) => self.obj = self.ptr,
+                Op::PushVal => self.val_stack.push(self.val),
+                Op::PopVal => self.val = self.val_stack.pop().unwrap(),
                 _ => todo!("{:?}", op),
             }
         }
@@ -713,15 +723,13 @@ mod tests {
     #[test]
     fn test_run_builtin() {
         let mut vm = Vm::default();
-        vm.register_builtin(0, "add", |ctx| ctx.get_arg(0) + ctx.get_arg(1));
+        vm.register_builtin(0, "add", |mut ctx| ctx.pop_val() + ctx.pop_val());
 
         let res = vm.run(&[
-            Op::Alloc(RecordSignature::new(2, 0)),
-            Op::Copy(R::Ptr, R::Arg),
             Op::Const(10),
-            Op::PutVal(R::Arg, 0),
+            Op::PushVal,
             Op::Const(20),
-            Op::PutVal(R::Arg, 1),
+            Op::PushVal,
             Op::CallBuiltin(0),
             Op::Halt,
         ]);
@@ -743,8 +751,8 @@ mod tests {
 
             ptr
         });
-        vm.register_builtin(1, "print_str", |ctx| -> Int {
-            let ptr = ctx.get_arg(0);
+        vm.register_builtin(1, "print_str", |mut ctx| -> Int {
+            let ptr = ctx.pop_val();
             for &ch in ctx.as_slice(ptr) {
                 print!("{}", ch as u8 as char);
             }
@@ -755,10 +763,7 @@ mod tests {
         vm.run(&[
             Op::CallBuiltin(0),
             Op::Copy(R::Val, R::Obj),
-            Op::Alloc(RecordSignature::new(1, 0)),
-            Op::Copy(R::Ptr, R::Arg),
-            Op::Copy(R::Obj, R::Val),
-            Op::PutVal(R::Arg, 0),
+            Op::PushVal,
             Op::CallBuiltin(1),
             Op::Halt,
         ]);

@@ -485,8 +485,8 @@ static LABEL_COUNTER: AtomicU64 = AtomicU64::new(0);
 const BUILTIN_LT: Int = 0;
 
 fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
-    vm.register_builtin(BUILTIN_LT, "<", |ctx| {
-        if ctx.get_arg(0) < ctx.get_arg(1) {
+    vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
+        if ctx.pop_val() >= ctx.pop_val() {
             Int::MAX
         } else {
             0
