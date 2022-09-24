@@ -2,16 +2,23 @@ use crate::vm::{Half, Int, Op, RecordSignature, R};
 use std::collections::HashMap;
 use std::hash::Hash;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Type {
+    Empty,
     Integer,
     Record(String),
-    Continuation,
+    Continuation(Box<Type>),
     Function(FunType),
 }
 
-#[derive(Debug, Clone)]
-pub struct FunType(Vec<Type>, Box<Type>);
+impl Type {
+    pub fn continuation(t: Type) -> Self {
+        Type::Continuation(Box::new(t))
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FunType(Vec<Type>); // no return type because functions never return
 
 #[derive(Debug, Copy, Clone)]
 enum Binding {
@@ -23,6 +30,7 @@ type Env = HashMap<String, (Binding, Type)>;
 
 trait AstNode {
     fn compile(&self, env: &Env) -> Vec<Op<String>>;
+    fn check(&self, env: &Env);
 }
 
 trait Typed {
@@ -69,15 +77,7 @@ struct ContCall {
 
 impl AstNode for Program {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let mut env = assoc(
-            "__halt".to_string(),
-            (Binding::Static, Type::Continuation),
-            env,
-        );
-
-        for def in &self.defs {
-            env = assoc(def.name().to_string(), (Binding::Static, def.type_().clone()), &env);
-        }
+        let env = self.make_env(env);
 
         let mut code = FunCall {
             name: "main".to_string(),
@@ -93,6 +93,33 @@ impl AstNode for Program {
 
         code
     }
+
+    fn check(&self, env: &Env) {
+        let env = self.make_env(env);
+        for def in &self.defs {
+            def.check(&env);
+        }
+    }
+}
+
+impl Program {
+    fn make_env(&self, env: &Env) -> Env {
+        let mut env = assoc(
+            "__halt".to_string(),
+            (Binding::Static, Type::Continuation(Box::new(Type::Integer))),
+            env,
+        );
+
+        for def in &self.defs {
+            env = assoc(
+                def.name().to_string(),
+                (Binding::Static, def.type_().clone()),
+                &env,
+            );
+        }
+
+        env
+    }
 }
 
 impl ToplevelDefinition for FunctionDefinition {
@@ -107,13 +134,7 @@ impl ToplevelDefinition for FunctionDefinition {
 
 impl AstNode for FunctionDefinition {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let mut local_env = env.clone();
-
-        let (_, _, idxmap) = map_types_to_record_indices(self.params.iter().map(|(_, t)| t));
-
-        for ((p, t), idx) in self.params.iter().zip(idxmap) {
-            local_env = assoc(p.clone(), (Binding::Local(idx), t.clone()), &local_env);
-        }
+        let local_env = self.extend_env(env);
 
         let mut code = vec![Op::label(self.name.clone())];
         if !self.params.is_empty() {
@@ -121,6 +142,26 @@ impl AstNode for FunctionDefinition {
         }
         code.extend(self.body.compile(&local_env));
         code
+    }
+
+    fn check(&self, env: &Env) {
+        let local_env = self.extend_env(env);
+        self.body.check(&local_env);
+        assert_eq!(self.body.type_(&local_env), &Type::Empty);
+    }
+}
+
+impl FunctionDefinition {
+    fn extend_env(&self, env: &Env) -> Env {
+        let mut env = env.clone();
+
+        let (_, _, idxmap) = map_types_to_record_indices(self.params.iter().map(|(_, t)| t));
+
+        for ((p, t), idx) in self.params.iter().zip(idxmap) {
+            env = assoc(p.clone(), (Binding::Local(idx), t.clone()), &env);
+        }
+
+        env
     }
 }
 
@@ -146,6 +187,10 @@ impl AstNode for RecordDefinition {
         code.push(Op::Copy(R::Ptr, R::Val));
         code
     }
+
+    fn check(&self, _env: &Env) {
+        todo!()
+    }
 }
 
 impl Expression for Constant {}
@@ -154,6 +199,8 @@ impl AstNode for Constant {
     fn compile(&self, _env: &Env) -> Vec<Op<String>> {
         vec![Op::Const(self.0)]
     }
+
+    fn check(&self, _: &Env) {}
 }
 
 impl Typed for Constant {
@@ -177,6 +224,8 @@ impl AstNode for Reference {
             (Binding::Local(idx), _) => vec![Op::GetVal(R::Lcl, idx)],
         }
     }
+
+    fn check(&self, _: &Env) {}
 }
 
 impl Typed for Reference {
@@ -189,7 +238,6 @@ impl TailExpression for FunCall {}
 
 impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-
         /*match env.get(&self.name) {
             None => panic!("{}", self.name),
             Some((binding, Type::Function(f))) => return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env),
@@ -211,11 +259,24 @@ impl AstNode for FunCall {
         code.push(Op::Goto(self.name.clone()));
         code
     }
+
+    fn check(&self, env: &Env) {
+        match env.get(&self.name) {
+            None => panic!("Unknown function {}", self.name),
+            Some((_, Type::Function(ft))) => {
+                for (param_type, arg) in ft.0.iter().zip(&self.args) {
+                    arg.check(env);
+                    assert_eq!(arg.type_(env), param_type);
+                }
+            }
+            _ => todo!(),
+        }
+    }
 }
 
 impl Typed for FunCall {
     fn type_<'a>(&self, _env: &'a Env) -> &'a Type {
-        todo!()
+        &Type::Empty
     }
 }
 
@@ -225,13 +286,31 @@ impl AstNode for ContCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
         match env.get(&self.name) {
             None => panic!("{}", self.name),
-            Some((binding, Type::Continuation)) => compile_unary_call(*binding, self.name.clone(), &*self.val, env),
+            Some((binding, Type::Continuation(_))) => {
+                compile_unary_call(*binding, self.name.clone(), &*self.val, env)
+            }
+            _ => todo!(),
+        }
+    }
+
+    fn check(&self, env: &Env) {
+        match env.get(&self.name) {
+            None => panic!("{}", self.name),
+            Some((_, Type::Continuation(t))) => {
+                self.val.check(env);
+                assert_eq!(self.val.type_(env), &**t);
+            }
             _ => todo!(),
         }
     }
 }
 
-fn compile_unary_call(binding: Binding, name: String, val: &dyn Expression, env: &Env) -> Vec<Op<String>> {
+fn compile_unary_call(
+    binding: Binding,
+    name: String,
+    val: &dyn Expression,
+    env: &Env,
+) -> Vec<Op<String>> {
     match binding {
         Binding::Static => {
             let mut code = val.compile(env);
@@ -249,7 +328,7 @@ fn compile_unary_call(binding: Binding, name: String, val: &dyn Expression, env:
 
 impl Typed for ContCall {
     fn type_<'a>(&self, _env: &'a Env) -> &'a Type {
-        todo!()
+        return &Type::Empty;
     }
 }
 
@@ -261,7 +340,7 @@ fn map_types_to_record_indices<'a>(
     let n_primitive = types
         .iter()
         .filter(|t| match t {
-            Type::Integer | Type::Continuation => true,
+            Type::Integer | Type::Continuation(_) => true,
             Type::Record(_) => false,
             _ => todo!(),
         })
@@ -275,7 +354,7 @@ fn map_types_to_record_indices<'a>(
     let mut indices = Vec::with_capacity(types.len());
     for t in types {
         match t {
-            Type::Integer | Type::Continuation => {
+            Type::Integer | Type::Continuation(_) => {
                 indices.push(primitive_idx);
                 primitive_idx += 1;
             }
@@ -323,47 +402,38 @@ mod tests {
             }
         };
 
-        (@topdef (define ($name:ident $($a:ident:$t:ident)*) -> $rt:ident $body:tt)) => {
+        (@topdef (define ($name:ident $($a:ident:$t:expr)*) $body:tt)) => {
             FunctionDefinition {
                 name: stringify!($name).to_string(),
-                params: vec![$((stringify!($a).to_string(), Type::$t)),*],
+                params: vec![$((stringify!($a).to_string(), $t)),*],
                 body: Box::new(tl![@tail $body]),
-                type_: Type::Function(FunType(vec![$(Type::$t),*], Box::new(Type::$rt)))
+                type_: Type::Function(FunType(vec![$($t),*]))
             }
         };
 
         ($($topdef:tt)*) => {
             Program {
                 defs: vec![$(
-                    tl!(@topdef $topdef)
-                )*],
+                    Box::new(tl!(@topdef $topdef))
+                ),*],
             }
         };
     }
 
     #[test]
     fn run_program() {
-        let program = Program {
-            defs: vec![
-                /*Box::new(RecordDefinition {
-                    name: "Data".to_string(),
-                    fields: vec![("x".to_string(), Type::Integer)],
-                }),*/
-                /*Box::new(FunctionDefinition {
-                    name: "foo".to_string(),
-                    params: vec![
-                        ("x".to_string(), Type::Integer),
-                        ("k".to_string(), Type::Continuation),
-                    ],
-                    body: Box::new(ContCall {
-                        name: "k".to_string(),
-                        val: Box::new(Reference::new("x")),
-                    }),
-                }),*/
-                Box::new(tl![@topdef (define (foo x:Integer k:Continuation) -> Integer (continue k x))]),
-                Box::new(tl![@topdef (define (main k:Continuation) -> Integer (foo 42 k))]),
-            ],
+        use Type::*;
+        let program = tl! {
+            /*Box::new(RecordDefinition {
+                name: "Data".to_string(),
+                fields: vec![("x".to_string(), Type::Integer)],
+            }),*/
+            (define (foo x:Integer k:Type::continuation(Integer))
+                (continue k x))
+            (define (main k:Type::continuation(Integer))
+                (foo 42 k))
         };
+        program.check(&HashMap::new());
 
         let code = program.compile(&HashMap::new());
         for op in &code {
