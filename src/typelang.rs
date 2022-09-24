@@ -71,11 +71,6 @@ struct FunCall {
     args: Vec<Box<dyn Expression>>,
 }
 
-struct ContCall {
-    name: String,
-    val: Box<dyn Expression>,
-}
-
 impl AstNode for Program {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
         let env = self.make_env(env);
@@ -317,30 +312,6 @@ impl Typed for FunCall {
     }
 }
 
-impl TailExpression for ContCall {}
-
-impl AstNode for ContCall {
-    fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        match env.get(&self.name) {
-            None => panic!("{}", self.name),
-            Some((binding, Type::Continuation(_))) => {
-                compile_unary_call(*binding, self.name.clone(), &*self.val, env)
-            }
-            _ => todo!(),
-        }
-    }
-
-    fn check(&self, env: &Env) {
-        match env.get(&self.name) {
-            None => panic!("{}", self.name),
-            Some((_, Type::Continuation(t))) => {
-                self.val.check(env);
-                assert_eq!(self.val.type_(env), &**t);
-            }
-            _ => todo!(),
-        }
-    }
-}
 
 fn compile_unary_call(
     binding: Binding,
@@ -361,12 +332,6 @@ fn compile_unary_call(
             code
         }
         _ => todo!(),
-    }
-}
-
-impl Typed for ContCall {
-    fn type_<'a>(&self, _env: &'a Env) -> &'a Type {
-        return &Type::Empty;
     }
 }
 
@@ -424,13 +389,6 @@ mod tests {
 
         (@expr $x:expr) => {
             Constant($x)
-        };
-
-        (@tail (continue $name:ident $val:tt)) => {
-            ContCall {
-                name: stringify!($name).to_string(),
-                val: Box::new(tl!(@expr $val)),
-            }
         };
 
         (@tail ($name:ident $($arg:tt)*)) => {
