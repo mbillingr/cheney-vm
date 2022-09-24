@@ -24,6 +24,7 @@ pub struct FunType(Vec<Type>); // no return type because functions never return
 enum Binding {
     Static,
     Local(Half),
+    Register(R),
 }
 
 type Env = HashMap<String, (Binding, Type)>;
@@ -134,13 +135,24 @@ impl ToplevelDefinition for FunctionDefinition {
 
 impl AstNode for FunctionDefinition {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let local_env = self.extend_env(env);
+        // calling convention:
+        //   unary function: VAL -> P00
+        //   n-ary function: ARG -> LCL
 
         let mut code = vec![Op::label(self.name.clone())];
-        if !self.params.is_empty() {
-            code.push(Op::Copy(R::Arg, R::Lcl));
+        match self.params.len() {
+            0 => {
+                code.extend(self.body.compile(env));
+            }
+            1 => {
+                code.push(Op::Copy(R::Val, R::P00));
+                code.extend(self.body.compile(&self.extend_env_unary(R::P00, env)));
+            }
+            _ => {
+                code.push(Op::Copy(R::Arg, R::Lcl));
+                code.extend(self.body.compile(&self.extend_env(env)));
+            }
         }
-        code.extend(self.body.compile(&local_env));
         code
     }
 
@@ -162,6 +174,10 @@ impl FunctionDefinition {
         }
 
         env
+    }
+    fn extend_env_unary(&self, r: R, env: &Env) -> Env {
+        let (p, t) = &self.params[0];
+        assoc(p.clone(), (Binding::Register(r), t.clone()), &env)
     }
 }
 
@@ -222,6 +238,8 @@ impl AstNode for Reference {
         match env[&self.0] {
             (Binding::Static, _) => vec![Op::GetAddr(self.0.clone())],
             (Binding::Local(idx), _) => vec![Op::GetVal(R::Lcl, idx)],
+            (Binding::Register(R::Val), _) => vec![],
+            (Binding::Register(r), _) => vec![Op::Copy(r, R::Val)],
         }
     }
 
@@ -238,11 +256,16 @@ impl TailExpression for FunCall {}
 
 impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        /*match env.get(&self.name) {
+        match env.get(&self.name) {
             None => panic!("{}", self.name),
-            Some((binding, Type::Function(f))) => return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env),
-            _ => todo!(),
-        }*/
+            Some((binding, Type::Continuation(_))) => {
+                return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env)
+            }
+            Some((binding, Type::Function(f))) if f.0.len() == 1 => {
+                return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env)
+            }
+            _ => {}
+        }
 
         let (n_primitive, n_pointer, idxmap) =
             map_types_to_record_indices(self.args.iter().map(|a| a.type_(env)));
@@ -256,7 +279,15 @@ impl AstNode for FunCall {
             code.push(Op::PutVal(R::Arg, idx));
         }
 
-        code.push(Op::Goto(self.name.clone()));
+        match env.get(&self.name) {
+            None => panic!("{}", self.name),
+            Some((Binding::Static, _)) => code.push(Op::Goto(self.name.clone())),
+            Some((Binding::Local(idx), _)) => {
+                code.extend([Op::GetVal(R::Lcl, *idx), Op::Copy(R::Val, R::Fun), Op::Jump]);
+            }
+            _ => todo!(),
+        }
+
         code
     }
 
@@ -264,10 +295,16 @@ impl AstNode for FunCall {
         match env.get(&self.name) {
             None => panic!("Unknown function {}", self.name),
             Some((_, Type::Function(ft))) => {
+                assert_eq!(self.args.len(), ft.0.len());
                 for (param_type, arg) in ft.0.iter().zip(&self.args) {
                     arg.check(env);
                     assert_eq!(arg.type_(env), param_type);
                 }
+            }
+            Some((_, Type::Continuation(t))) => {
+                assert_eq!(self.args.len(), 1);
+                self.args[0].check(env);
+                assert_eq!(self.args[0].type_(env), &**t);
             }
             _ => todo!(),
         }
@@ -323,6 +360,7 @@ fn compile_unary_call(
             code.push(Op::Jump);
             code
         }
+        _ => todo!(),
     }
 }
 

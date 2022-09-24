@@ -13,6 +13,7 @@ const INITIAL_HEAP_SIZE: usize = 8;
 pub enum R {
     Fun,
     Val,
+    P00,
     Ptr,
     Obj,
     Arg,
@@ -132,8 +133,11 @@ pub struct Vm<AC, GC> {
     heap: Vec<Int>,
 
     // registers
+    //  note: 1. Ptr registers must never set to an integer value
+    //        2. Int registers must not contain pointers prior to allocation/gc
     val: Int,
     fun: Int,
+    p00: Int,
     ptr: Ptr,
     obj: Ptr,
     arg: Ptr,
@@ -158,6 +162,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             heap,
             val: 0,
             fun: 0,
+            p00: 0,
             ptr: 0,
             obj: 0,
             arg: 0,
@@ -201,6 +206,8 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::Const(x) => self.val = x,
                 Op::Copy(R::Val, R::Fun) => self.fun = self.val,
                 Op::Copy(R::Val, R::Obj) => self.obj = self.val,
+                Op::Copy(R::Val, R::P00) => self.p00 = self.val,
+                Op::Copy(R::P00, R::Val) => self.val = self.p00,
                 Op::Copy(R::Arg, R::Lcl) => self.lcl = self.arg,
                 Op::Copy(R::Obj, R::Val) => self.val = self.obj,
                 Op::Copy(R::Obj, R::Arg) => self.arg = self.obj,
@@ -227,6 +234,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
         match r {
             R::Val => panic!("VAL accessed as pointer"),
             R::Fun => panic!("FUN accessed as pointer"),
+            R::P00 => panic!("P00 accessed as pointer"),
             R::Ptr => self.ptr,
             R::Obj => self.obj,
             R::Arg => self.arg,
