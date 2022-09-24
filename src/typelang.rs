@@ -1,4 +1,4 @@
-use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm, R};
+use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::AtomicU64;
@@ -24,7 +24,7 @@ pub struct FunType(Vec<Type>); // no return type because functions never return
 #[derive(Debug, Copy, Clone)]
 enum Binding {
     Static,
-    Local(Half),
+    Local(Int),
 }
 
 type Env = HashMap<String, (Binding, Type)>;
@@ -101,7 +101,7 @@ impl AstNode for Program {
         }
         .compile(&env);
 
-        code.extend([Op::label("__halt"), Op::PushFrom(R::Arg, 0), Op::Halt]);
+        code.extend([Op::label("__halt"), Op::Halt]);
 
         for def in &self.defs {
             code.extend(def.compile(&env));
@@ -156,7 +156,17 @@ impl<B: TailStatement> AstNode for FunctionDefinition<B> {
                 code.extend(self.body.compile(env));
             }
             _ => {
-                code.push(Op::Copy(R::Arg, R::Lcl));
+                let (n_primitive, n_pointer, idxmap) =
+                    map_types_to_record_indices(self.params.iter().map(|(_, t)| t));
+                code.push(Op::Alloc(RecordSignature::new(n_primitive, n_pointer)));
+                code.push(Op::SetLocals);
+                for ((_, t), idx) in self.params.iter().zip(idxmap).rev() {
+                    match t {
+                        Type::Record(_) => code.push(Op::PtrToVal),
+                        _ => {}
+                    }
+                    code.push(Op::PopLocal(idx as Int))
+                }
                 code.extend(self.body.compile(&self.extend_env(env)));
             }
         }
@@ -177,7 +187,7 @@ impl<B: TailStatement> FunctionDefinition<B> {
         let (_, _, idxmap) = map_types_to_record_indices(self.params.iter().map(|(_, t)| t));
 
         for ((p, t), idx) in self.params.iter().zip(idxmap) {
-            env = assoc(p.clone(), (Binding::Local(idx), t.clone()), &env);
+            env = assoc(p.clone(), (Binding::Local(idx as Int), t.clone()), &env);
         }
 
         env
@@ -239,7 +249,7 @@ impl AstNode for Reference {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
         match env[&self.0] {
             (Binding::Static, _) => vec![Op::PushAddr(self.0.clone())],
-            (Binding::Local(idx), _) => vec![Op::PushFrom(R::Lcl, idx)],
+            (Binding::Local(idx), _) => vec![Op::PushLocal(idx)],
         }
     }
 
@@ -321,23 +331,17 @@ impl TailStatement for FunCall {}
 
 impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let (n_primitive, n_pointer, idxmap) =
-            map_types_to_record_indices(self.args.iter().map(|a| a.type_(env)));
-
         let mut code = vec![];
-        code.push(Op::Alloc(RecordSignature::new(n_primitive, n_pointer)));
-        code.push(Op::Copy(R::Ptr, R::Arg));
 
-        for (arg, idx) in self.args.iter().zip(idxmap) {
+        for arg in self.args.iter() {
             code.extend(arg.compile(env));
-            code.push(Op::PopInto(R::Arg, idx));
         }
 
         match env.get(&self.name) {
             None => panic!("{}", self.name),
             Some((Binding::Static, _)) => code.push(Op::Goto(self.name.clone())),
             Some((Binding::Local(idx), _)) => {
-                code.extend([Op::PushFrom(R::Lcl, *idx), Op::Jump]);
+                code.extend([Op::PushLocal(*idx), Op::Jump]);
             }
         }
 
