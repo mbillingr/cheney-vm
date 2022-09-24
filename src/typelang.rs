@@ -25,7 +25,6 @@ pub struct FunType(Vec<Type>); // no return type because functions never return
 enum Binding {
     Static,
     Local(Half),
-    Register(R),
 }
 
 type Env = HashMap<String, (Binding, Type)>;
@@ -88,7 +87,7 @@ struct FunCall {
 
 struct Operation<A: Expression, B: Expression>(Operator, A, B);
 
-enum Operator {
+pub enum Operator {
     LessThan,
 }
 
@@ -151,20 +150,11 @@ impl<B: TailStatement> ToplevelDefinition for FunctionDefinition<B> {
 
 impl<B: TailStatement> AstNode for FunctionDefinition<B> {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        // calling convention:
-        //   unary function: VAL -> P00
-        //   n-ary function: ARG -> LCL
-
         let mut code = vec![Op::label(self.name.clone())];
         match self.params.len() {
             0 => {
                 code.extend(self.body.compile(env));
             }
-            /*1 => {
-                //code.push(Op::Copy(todo!(), R::P00));
-                //code.extend(self.body.compile(&self.extend_env_unary(R::P00, env)));
-                todo!()
-            }*/
             _ => {
                 code.push(Op::Copy(R::Arg, R::Lcl));
                 code.extend(self.body.compile(&self.extend_env(env)));
@@ -192,10 +182,6 @@ impl<B: TailStatement> FunctionDefinition<B> {
 
         env
     }
-    fn extend_env_unary(&self, r: R, env: &Env) -> Env {
-        let (p, t) = &self.params[0];
-        assoc(p.clone(), (Binding::Register(r), t.clone()), &env)
-    }
 }
 
 impl ToplevelDefinition for RecordDefinition {
@@ -215,10 +201,9 @@ impl AstNode for RecordDefinition {
 
         let rs = RecordSignature::new(n_primitive, n_pointer);
 
-        let mut code = vec![Op::label(self.name.clone())];
+        let mut code: Vec<Op<String>> = vec![Op::label(self.name.clone())];
         code.push(Op::Alloc(rs));
-        code.push(Op::Copy(R::Ptr, todo!()));
-        code
+        todo!()
     }
 
     fn check(&self, _env: &Env) {
@@ -255,7 +240,6 @@ impl AstNode for Reference {
         match env[&self.0] {
             (Binding::Static, _) => vec![Op::PushAddr(self.0.clone())],
             (Binding::Local(idx), _) => vec![Op::PushFrom(R::Lcl, idx)],
-            (Binding::Register(r), _) => vec![Op::Copy(r, todo!())],
         }
     }
 
@@ -337,14 +321,6 @@ impl TailStatement for FunCall {}
 
 impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        /*match env.get(&self.name) {
-            None => panic!("{}", self.name),
-            Some((binding, Type::Function(f))) if f.0.len() == 1 => {
-                return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env)
-            }
-            _ => {}
-        }*/
-
         let (n_primitive, n_pointer, idxmap) =
             map_types_to_record_indices(self.args.iter().map(|a| a.type_(env)));
 
@@ -363,7 +339,6 @@ impl AstNode for FunCall {
             Some((Binding::Local(idx), _)) => {
                 code.extend([Op::PushFrom(R::Lcl, *idx), Op::Jump]);
             }
-            _ => todo!(),
         }
 
         code
@@ -384,32 +359,16 @@ impl AstNode for FunCall {
     }
 }
 
-fn compile_unary_call<E: Expression + ?Sized>(
-    binding: Binding,
-    name: String,
-    val: &E,
-    env: &Env,
-) -> Vec<Op<String>> {
-    match binding {
-        Binding::Static => {
-            let mut code = val.compile(env);
-            code.push(Op::Goto(name));
-            code
-        }
-        Binding::Local(idx) => {
-            let mut code = val.compile(env);
-            code.extend([Op::PushFrom(R::Lcl, idx), Op::Jump]);
-            code
-        }
-        _ => todo!(),
-    }
-}
-
 impl<A: Expression, B: Expression> Expression for Operation<A, B> {}
 
 impl<A: Expression, B: Expression> AstNode for Operation<A, B> {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        todo!()
+        let mut code = self.1.compile(env);
+        code.extend(self.2.compile(env));
+        match self.0 {
+            Operator::LessThan => code.push(Op::CallBuiltin(BUILTIN_LT)),
+        }
+        code
     }
 
     fn check(&self, env: &Env) {
@@ -425,7 +384,7 @@ impl<A: Expression, B: Expression> AstNode for Operation<A, B> {
 }
 
 impl<A: Expression, B: Expression> Typed for Operation<A, B> {
-    fn type_<'a, 'b: 'a>(&'b self, env: &'a Env) -> &'a Type {
+    fn type_<'a, 'b: 'a>(&'b self, _env: &'a Env) -> &'a Type {
         match self.0 {
             Operator::LessThan => &Type::Boolean,
         }
@@ -483,7 +442,7 @@ static LABEL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const BUILTIN_LT: Int = 0;
 
-fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
+pub fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
     vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
         if ctx.pop_val() >= ctx.pop_val() {
             Int::MAX
@@ -599,7 +558,7 @@ mod tests {
             (define (fib n:Integer k:Type::continuation(Integer))
                 (if (< n 2)
                     (k 1)
-                    (k 10)))
+                    (k 8)))
             (define (main k:Type::continuation(Integer))
                 (fib 5 k))
         };
@@ -613,9 +572,10 @@ mod tests {
         let code = transform_labels(&code).collect::<Vec<_>>();
 
         let mut vm = Vm::default();
+        register_builtins(&mut vm);
         let res = vm.run(&code);
 
-        assert_eq!(res, 42);
+        assert_eq!(res, 8);
     }
 }
 
