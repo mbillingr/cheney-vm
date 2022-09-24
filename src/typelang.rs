@@ -13,7 +13,7 @@ pub enum Type {
 
 impl Type {
     pub fn continuation(t: Type) -> Self {
-        Type::Continuation(Box::new(t))
+        Type::Function(FunType(vec![t]))
     }
 }
 
@@ -378,7 +378,7 @@ fn map_types_to_record_indices<'a>(
     let n_primitive = types
         .iter()
         .filter(|t| match t {
-            Type::Integer | Type::Continuation(_) => true,
+            Type::Integer | Type::Continuation(_) | Type::Function(_) => true,
             Type::Record(_) => false,
             _ => todo!(),
         })
@@ -392,7 +392,7 @@ fn map_types_to_record_indices<'a>(
     let mut indices = Vec::with_capacity(types.len());
     for t in types {
         match t {
-            Type::Integer | Type::Continuation(_) => {
+            Type::Integer | Type::Continuation(_) | Type::Function(_) => {
                 indices.push(primitive_idx);
                 primitive_idx += 1;
             }
@@ -467,7 +467,7 @@ mod tests {
                 fields: vec![("x".to_string(), Type::Integer)],
             }),*/
             (define (foo x:Integer k:Type::continuation(Integer))
-                (continue k x))
+                (k x))
             (define (main k:Type::continuation(Integer))
                 (foo 42 k))
         };
