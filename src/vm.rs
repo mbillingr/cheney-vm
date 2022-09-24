@@ -27,6 +27,7 @@ pub enum Op<T> {
     Label(T),
     GetAddr(T),
     Goto(T),
+    GoIfZero(T),
     Jump,
     CallBuiltin(Int),
 
@@ -46,6 +47,9 @@ impl<T> Op<T> {
     pub fn goto(label: impl Into<T>) -> Self {
         Self::Goto(label.into())
     }
+    pub fn goto_zero(label: impl Into<T>) -> Self {
+        Self::GoIfZero(label.into())
+    }
 
     pub fn is_label(&self) -> bool {
         match self {
@@ -56,7 +60,9 @@ impl<T> Op<T> {
 
     fn convert<U>(&self) -> Op<U> {
         match self {
-            Op::Label(_) | Op::GetAddr(_) | Op::Goto(_) => panic!("Invalid conversion"),
+            Op::Label(_) | Op::GetAddr(_) | Op::Goto(_) | Op::GoIfZero(_) => {
+                panic!("Invalid conversion")
+            }
             Op::Halt => Op::Halt,
             Op::Jump => Op::Jump,
             Op::CallBuiltin(idx) => Op::CallBuiltin(*idx),
@@ -74,6 +80,7 @@ pub fn transform_labels<T: Eq + Hash>(code: &[Op<T>]) -> impl Iterator<Item = Op
     code.iter().filter_map(move |op| match op {
         Op::Label(_) => None,
         Op::Goto(label) => Some(Op::Goto(labels[label])),
+        Op::GoIfZero(label) => Some(Op::GoIfZero(labels[label])),
         Op::GetAddr(label) => Some(Op::GetAddr(labels[label])),
         _ => Some(op.convert()),
     })
@@ -190,6 +197,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
     }
 
     pub fn run(&mut self, program: &[Op<Int>]) -> Int {
+        println!("{program:?}");
         let mut ip = 0;
         loop {
             let op = program[ip];
@@ -198,6 +206,11 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::Halt => return self.val,
                 Op::GetAddr(pos) => self.val = pos,
                 Op::Goto(pos) => ip = pos as usize,
+                Op::GoIfZero(pos) => {
+                    if self.val == 0 {
+                        ip = pos as usize
+                    }
+                }
                 Op::Jump => ip = self.fun as usize,
                 Op::CallBuiltin(idx) => self.val = self.builtins[idx as usize](self.make_context()),
                 Op::Alloc(s) => self.ptr = self.alloc(s.n_primitive(), s.n_pointer()),
@@ -750,5 +763,32 @@ mod tests {
             Op::CallBuiltin(1),
             Op::Halt,
         ]);
+    }
+
+    #[test]
+    fn conditional() {
+        let mut vm = Vm::default();
+
+        let res = vm.run(&[
+            Op::Const(0),
+            Op::goto_zero(4 as Int),
+            Op::Const(1),
+            Op::Halt,
+            Op::Const(2),
+            Op::Halt,
+        ]);
+
+        assert_eq!(res, 2);
+
+        let res = vm.run(&[
+            Op::Const(Int::MAX),
+            Op::goto_zero(4 as Int),
+            Op::Const(1),
+            Op::Halt,
+            Op::Const(2),
+            Op::Halt,
+        ]);
+
+        assert_eq!(res, 1);
     }
 }
