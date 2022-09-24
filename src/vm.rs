@@ -1,5 +1,6 @@
 use crate::memory::{ChattyCollector, CopyAllocator, CopyCollector};
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::hash::Hash;
 
 pub type Int = u64;
@@ -11,9 +12,6 @@ const INITIAL_HEAP_SIZE: usize = 8;
 /// Registers
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum R {
-    Fun,
-    Val,
-    P00,
     Ptr,
     Obj,
     Arg,
@@ -25,21 +23,24 @@ pub enum R {
 pub enum Op<T> {
     Halt,
     Label(T),
-    GetAddr(T),
+    PushAddr(T),
     Goto(T),
     GoIfZero(T),
     Jump,
     CallBuiltin(Int),
 
     Alloc(RecordSignature),
-    GetVal(R, Half),
-    PutVal(R, Half),
 
     Const(Int),
     Copy(R, R),
 
-    PushVal,
-    PopVal,
+    PushFrom(R, Half),
+    PopInto(R, Half),
+
+    Dup,
+
+    PushObj,
+    PopObj,
 }
 
 impl<T> Op<T> {
@@ -63,19 +64,20 @@ impl<T> Op<T> {
 
     fn convert<U>(&self) -> Op<U> {
         match self {
-            Op::Label(_) | Op::GetAddr(_) | Op::Goto(_) | Op::GoIfZero(_) => {
+            Op::Label(_) | Op::PushAddr(_) | Op::Goto(_) | Op::GoIfZero(_) => {
                 panic!("Invalid conversion")
             }
             Op::Halt => Op::Halt,
             Op::Jump => Op::Jump,
             Op::CallBuiltin(idx) => Op::CallBuiltin(*idx),
             Op::Alloc(s) => Op::Alloc(*s),
-            Op::GetVal(r, idx) => Op::GetVal(*r, *idx),
-            Op::PutVal(r, idx) => Op::PutVal(*r, *idx),
             Op::Const(x) => Op::Const(*x),
             Op::Copy(a, b) => Op::Copy(*a, *b),
-            Op::PushVal => Op::PushVal,
-            Op::PopVal => Op::PopVal,
+            Op::PushFrom(r, idx) => Op::PushFrom(*r, *idx),
+            Op::PopInto(r, idx) => Op::PopInto(*r, *idx),
+            Op::Dup => Op::Dup,
+            Op::PushObj => Op::PushObj,
+            Op::PopObj => Op::PopObj,
         }
     }
 }
@@ -86,7 +88,7 @@ pub fn transform_labels<T: Eq + Hash>(code: &[Op<T>]) -> impl Iterator<Item = Op
         Op::Label(_) => None,
         Op::Goto(label) => Some(Op::Goto(labels[label])),
         Op::GoIfZero(label) => Some(Op::GoIfZero(labels[label])),
-        Op::GetAddr(label) => Some(Op::GetAddr(labels[label])),
+        Op::PushAddr(label) => Some(Op::PushAddr(labels[label])),
         _ => Some(op.convert()),
     })
 }
@@ -137,8 +139,17 @@ impl<'a, AC: Allocator, GC: GarbageCollector> VmContext<'a, AC, GC> {
     }
 }
 
-pub type BuiltinFunction<AC, GC> = fn(VmContext<AC, GC>) -> Int;
+pub type BuiltinFunctionType<AC, GC> = fn(VmContext<AC, GC>) -> Int;
 
+pub struct BuiltinFunction<AC, GC>(BuiltinFunctionType<AC, GC>);
+
+impl<AC, GC> std::fmt::Debug for BuiltinFunction<AC, GC> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<builtin>")
+    }
+}
+
+#[derive(Debug)]
 pub struct Vm<AC, GC> {
     ac: AC,
     gc: GC,
@@ -149,9 +160,6 @@ pub struct Vm<AC, GC> {
     // registers
     //  note: 1. Ptr registers must never set to an integer value
     //        2. Int registers must not contain pointers prior to allocation/gc
-    val: Int,
-    fun: Int,
-    p00: Int,
     ptr: Ptr,
     obj: Ptr,
     arg: Ptr,
@@ -175,9 +183,6 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             gc,
             heap,
             val_stack: vec![],
-            val: 0,
-            fun: 0,
-            p00: 0,
             ptr: 0,
             obj: 0,
             arg: 0,
@@ -191,10 +196,10 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
         &mut self,
         idx: Int,
         _info: impl ToString,
-        func: BuiltinFunction<AC, GC>,
+        func: BuiltinFunctionType<AC, GC>,
     ) {
         assert_eq!(idx as usize, self.builtins.len());
-        self.builtins.push(func);
+        self.builtins.push(BuiltinFunction(func));
     }
 
     pub fn make_context(&mut self) -> VmContext<AC, GC> {
@@ -210,33 +215,38 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             let op = program[ip];
             ip += 1;
             match op {
-                Op::Halt => return self.val,
-                Op::GetAddr(pos) => self.val = pos,
+                Op::Halt => return self.val_stack.pop().unwrap_or(123456789),
+                Op::PushAddr(pos) => self.val_stack.push(pos),
                 Op::Goto(pos) => ip = pos as usize,
                 Op::GoIfZero(pos) => {
-                    if self.val == 0 {
+                    if self.val_stack.pop().unwrap() == 0 {
                         ip = pos as usize
                     }
                 }
-                Op::Jump => ip = self.fun as usize,
-                Op::CallBuiltin(idx) => self.val = self.builtins[idx as usize](self.make_context()),
+                Op::Jump => ip = self.val_stack.pop().unwrap() as usize,
+                Op::CallBuiltin(idx) => {
+                    let res = self.builtins[idx as usize].0(self.make_context());
+                    self.val_stack.push(res);
+                }
                 Op::Alloc(s) => self.ptr = self.alloc(s.n_primitive(), s.n_pointer()),
-                Op::GetVal(r, idx) => self.val = self.get_field(r, idx),
-                Op::PutVal(r, idx) => self.set_field(r, idx, self.val),
-                Op::Const(x) => self.val = x,
-                Op::Copy(R::Val, R::Fun) => self.fun = self.val,
-                Op::Copy(R::Val, R::Obj) => self.obj = self.val,
-                Op::Copy(R::Val, R::P00) => self.p00 = self.val,
-                Op::Copy(R::P00, R::Val) => self.val = self.p00,
+                Op::Const(x) => self.val_stack.push(x),
                 Op::Copy(R::Arg, R::Lcl) => self.lcl = self.arg,
-                Op::Copy(R::Obj, R::Val) => self.val = self.obj,
                 Op::Copy(R::Obj, R::Arg) => self.arg = self.obj,
                 Op::Copy(R::Obj, R::Cls) => self.cls = self.obj,
-                Op::Copy(R::Ptr, R::Val) => self.val = self.ptr,
                 Op::Copy(R::Ptr, R::Arg) => self.arg = self.ptr,
                 Op::Copy(R::Ptr, R::Obj) => self.obj = self.ptr,
-                Op::PushVal => self.val_stack.push(self.val),
-                Op::PopVal => self.val = self.val_stack.pop().unwrap(),
+                Op::PushFrom(r, idx) => self.val_stack.push(self.get_field(r, idx)),
+                Op::PopInto(r, idx) => {
+                    let val = self.val_stack.pop().unwrap();
+                    self.set_field(r, idx, val);
+                }
+                Op::Dup => {
+                    let val = self.val_stack.pop().unwrap();
+                    self.val_stack.push(val);
+                    self.val_stack.push(val);
+                }
+                Op::PushObj => self.val_stack.push(self.obj),
+                Op::PopObj => self.obj = self.val_stack.pop().unwrap(),
                 _ => todo!("{:?}", op),
             }
         }
@@ -254,9 +264,6 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
 
     fn get_pointer(&self, r: R) -> Ptr {
         match r {
-            R::Val => panic!("VAL accessed as pointer"),
-            R::Fun => panic!("FUN accessed as pointer"),
-            R::P00 => panic!("P00 accessed as pointer"),
             R::Ptr => self.ptr,
             R::Obj => self.obj,
             R::Arg => self.arg,
@@ -337,13 +344,13 @@ impl RecordSignature {
     }
 }
 
-pub trait Allocator {
+pub trait Allocator: Debug {
     fn init_heap(&self, size: usize) -> Vec<Int>;
     fn size_of(&self, rs: RecordSignature) -> usize;
     fn alloc(&self, rs: RecordSignature, heap: &mut Vec<Int>) -> Int;
 }
 
-pub trait GarbageCollector {
+pub trait GarbageCollector: Debug {
     fn collect(&self, roots: &mut [Ptr], heap: &mut Vec<Int>);
 }
 
@@ -379,22 +386,13 @@ mod tests {
     }
 
     #[test]
-    fn test_set_obj_to_val() {
-        let mut vm = Vm::default();
-
-        vm.run(&[Op::Const(123), Op::Copy(R::Val, R::Obj), Op::Halt]);
-
-        assert_eq!(vm.obj, 123);
-    }
-
-    #[test]
     fn test_set_val_to_obj() {
         let mut vm = Vm::default();
 
         vm.obj = 456;
-        vm.run(&[Op::Copy(R::Obj, R::Val), Op::Halt]);
+        let res = vm.run(&[Op::PushObj, Op::Halt]);
 
-        assert_eq!(vm.val, 456);
+        assert_eq!(res, 456);
     }
 
     #[test]
@@ -417,9 +415,9 @@ mod tests {
             Op::Alloc(RecordSignature::new(2, 0)),
             Op::Copy(R::Ptr, R::Obj),
             Op::Const(12),
-            Op::PutVal(R::Obj, 0),
+            Op::PopInto(R::Obj, 0),
             Op::Const(34),
-            Op::PutVal(R::Obj, 1),
+            Op::PopInto(R::Obj, 1),
             Op::Halt,
         ]);
 
@@ -463,11 +461,11 @@ mod tests {
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
-            Op::PutVal(R::Obj, 0),
-            Op::Copy(R::Obj, R::Val),
+            Op::PopInto(R::Obj, 0),
+            Op::PushObj,
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
-            Op::PutVal(R::Obj, 0),
+            Op::PopInto(R::Obj, 0),
             Op::Halt,
         ]);
         vm.ptr = 0;
@@ -488,14 +486,13 @@ mod tests {
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
-            Op::PutVal(R::Obj, 0),
-            Op::Copy(R::Obj, R::Val),
+            Op::PopInto(R::Obj, 0),
+            Op::PushObj,
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
-            Op::PutVal(R::Obj, 0),
+            Op::PopInto(R::Obj, 0),
             Op::Halt,
         ]);
-        vm.val = 0;
 
         // the second object comes later on the heap
         assert_eq!(vm.obj, 4);
@@ -517,13 +514,15 @@ mod tests {
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
             Op::Const(0),
-            Op::PutVal(R::Obj, 0),
-            Op::PutVal(R::Obj, 1),
-            Op::Copy(R::Obj, R::Val),
+            Op::PopInto(R::Obj, 0),
+            Op::Const(0),
+            Op::PopInto(R::Obj, 1),
+            Op::PushObj,
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
-            Op::PutVal(R::Obj, 0),
-            Op::PutVal(R::Obj, 1),
+            Op::Dup,
+            Op::PopInto(R::Obj, 0),
+            Op::PopInto(R::Obj, 1),
             Op::Halt,
         ]);
 
@@ -544,16 +543,16 @@ mod tests {
         vm.run(&[
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
-            Op::Copy(R::Obj, R::Val),
-            Op::PutVal(R::Obj, 1),
+            Op::PushObj,
+            Op::PopInto(R::Obj, 1),
             Op::Const(111),
-            Op::PutVal(R::Obj, 0),
+            Op::PopInto(R::Obj, 0),
             Op::Alloc(rs),
             Op::Copy(R::Ptr, R::Obj),
-            Op::Copy(R::Obj, R::Val),
-            Op::PutVal(R::Obj, 1),
+            Op::PushObj,
+            Op::PopInto(R::Obj, 1),
             Op::Const(222),
-            Op::PutVal(R::Obj, 0),
+            Op::PopInto(R::Obj, 0),
             Op::Halt,
         ]);
 
@@ -618,14 +617,14 @@ mod tests {
             // func
             Op::Label("func"),
             Op::Copy(R::Arg, R::Lcl),
-            Op::GetVal(R::Lcl, 0),
+            Op::PushFrom(R::Lcl, 0),
             Op::Halt,
             // main
             Op::Label("main"),
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::Const(99),
-            Op::PutVal(R::Arg, 0),
+            Op::PopInto(R::Arg, 0),
             Op::Goto("func"),
         ])
         .collect::<Vec<_>>();
@@ -647,7 +646,7 @@ mod tests {
             // func
             Op::Label("func"),
             Op::Copy(R::Arg, R::Lcl),
-            Op::GetVal(R::Lcl, 0),
+            Op::PushFrom(R::Lcl, 0),
             Op::Halt,
             // func
             Op::Label("invoke"),
@@ -655,16 +654,15 @@ mod tests {
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::Const(42),
-            Op::PutVal(R::Arg, 0),
-            Op::GetVal(R::Lcl, 0),
-            Op::Copy(R::Val, R::Fun),
+            Op::PopInto(R::Arg, 0),
+            Op::PushFrom(R::Lcl, 0),
             Op::Jump,
             // main
             Op::Label("main"),
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::Copy(R::Ptr, R::Arg),
-            Op::GetAddr("func"),
-            Op::PutVal(R::Arg, 0),
+            Op::PushAddr("func"),
+            Op::PopInto(R::Arg, 0),
             Op::Goto("invoke"),
         ])
         .collect::<Vec<_>>();
@@ -688,15 +686,15 @@ mod tests {
             // inner
             Op::Label("inner"),
             Op::Copy(R::Arg, R::Lcl),
-            Op::GetVal(R::Cls, 0),
+            Op::PushFrom(R::Cls, 0),
             Op::Halt,
             // outer
             Op::Label("outer"),
             Op::Copy(R::Arg, R::Lcl),
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::Copy(R::Ptr, R::Obj),
-            Op::GetVal(R::Lcl, 1),
-            Op::PutVal(R::Obj, 0),
+            Op::PushFrom(R::Lcl, 1),
+            Op::PopInto(R::Obj, 0),
             Op::Alloc(RecordSignature::new(0, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::Copy(R::Obj, R::Cls),
@@ -706,11 +704,11 @@ mod tests {
             Op::Alloc(RecordSignature::new(3, 0)),
             Op::Copy(R::Ptr, R::Arg),
             Op::Const(1),
-            Op::PutVal(R::Arg, 0),
+            Op::PopInto(R::Arg, 0),
             Op::Const(2),
-            Op::PutVal(R::Arg, 1),
+            Op::PopInto(R::Arg, 1),
             Op::Const(3),
-            Op::PutVal(R::Arg, 2),
+            Op::PopInto(R::Arg, 2),
             Op::Goto("outer"),
         ])
         .collect::<Vec<_>>();
@@ -725,14 +723,7 @@ mod tests {
         let mut vm = Vm::default();
         vm.register_builtin(0, "add", |mut ctx| ctx.pop_val() + ctx.pop_val());
 
-        let res = vm.run(&[
-            Op::Const(10),
-            Op::PushVal,
-            Op::Const(20),
-            Op::PushVal,
-            Op::CallBuiltin(0),
-            Op::Halt,
-        ]);
+        let res = vm.run(&[Op::Const(10), Op::Const(20), Op::CallBuiltin(0), Op::Halt]);
 
         assert_eq!(res, 30);
     }
@@ -762,8 +753,8 @@ mod tests {
 
         vm.run(&[
             Op::CallBuiltin(0),
-            Op::Copy(R::Val, R::Obj),
-            Op::PushVal,
+            Op::PopObj,
+            Op::PushObj,
             Op::CallBuiltin(1),
             Op::Halt,
         ]);

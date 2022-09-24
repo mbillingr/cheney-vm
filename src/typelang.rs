@@ -102,7 +102,7 @@ impl AstNode for Program {
         }
         .compile(&env);
 
-        code.extend([Op::label("__halt"), Op::Halt]);
+        code.extend([Op::label("__halt"), Op::PushFrom(R::Arg, 0), Op::Halt]);
 
         for def in &self.defs {
             code.extend(def.compile(&env));
@@ -160,10 +160,11 @@ impl<B: TailStatement> AstNode for FunctionDefinition<B> {
             0 => {
                 code.extend(self.body.compile(env));
             }
-            1 => {
-                code.push(Op::Copy(R::Val, R::P00));
-                code.extend(self.body.compile(&self.extend_env_unary(R::P00, env)));
-            }
+            /*1 => {
+                //code.push(Op::Copy(todo!(), R::P00));
+                //code.extend(self.body.compile(&self.extend_env_unary(R::P00, env)));
+                todo!()
+            }*/
             _ => {
                 code.push(Op::Copy(R::Arg, R::Lcl));
                 code.extend(self.body.compile(&self.extend_env(env)));
@@ -216,7 +217,7 @@ impl AstNode for RecordDefinition {
 
         let mut code = vec![Op::label(self.name.clone())];
         code.push(Op::Alloc(rs));
-        code.push(Op::Copy(R::Ptr, R::Val));
+        code.push(Op::Copy(R::Ptr, todo!()));
         code
     }
 
@@ -252,10 +253,9 @@ impl Reference {
 impl AstNode for Reference {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
         match env[&self.0] {
-            (Binding::Static, _) => vec![Op::GetAddr(self.0.clone())],
-            (Binding::Local(idx), _) => vec![Op::GetVal(R::Lcl, idx)],
-            (Binding::Register(R::Val), _) => vec![],
-            (Binding::Register(r), _) => vec![Op::Copy(r, R::Val)],
+            (Binding::Static, _) => vec![Op::PushAddr(self.0.clone())],
+            (Binding::Local(idx), _) => vec![Op::PushFrom(R::Lcl, idx)],
+            (Binding::Register(r), _) => vec![Op::Copy(r, todo!())],
         }
     }
 
@@ -337,13 +337,13 @@ impl TailStatement for FunCall {}
 
 impl AstNode for FunCall {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        match env.get(&self.name) {
+        /*match env.get(&self.name) {
             None => panic!("{}", self.name),
             Some((binding, Type::Function(f))) if f.0.len() == 1 => {
                 return compile_unary_call(*binding, self.name.clone(), &*self.args[0], env)
             }
             _ => {}
-        }
+        }*/
 
         let (n_primitive, n_pointer, idxmap) =
             map_types_to_record_indices(self.args.iter().map(|a| a.type_(env)));
@@ -354,14 +354,14 @@ impl AstNode for FunCall {
 
         for (arg, idx) in self.args.iter().zip(idxmap) {
             code.extend(arg.compile(env));
-            code.push(Op::PutVal(R::Arg, idx));
+            code.push(Op::PopInto(R::Arg, idx));
         }
 
         match env.get(&self.name) {
             None => panic!("{}", self.name),
             Some((Binding::Static, _)) => code.push(Op::Goto(self.name.clone())),
             Some((Binding::Local(idx), _)) => {
-                code.extend([Op::GetVal(R::Lcl, *idx), Op::Copy(R::Val, R::Fun), Op::Jump]);
+                code.extend([Op::PushFrom(R::Lcl, *idx), Op::Jump]);
             }
             _ => todo!(),
         }
@@ -397,9 +397,8 @@ fn compile_unary_call<E: Expression + ?Sized>(
             code
         }
         Binding::Local(idx) => {
-            let mut code = vec![Op::GetVal(R::Lcl, idx), Op::Copy(R::Val, R::Fun)];
-            code.extend(val.compile(env));
-            code.push(Op::Jump);
+            let mut code = val.compile(env);
+            code.extend([Op::PushFrom(R::Lcl, idx), Op::Jump]);
             code
         }
         _ => todo!(),
@@ -574,9 +573,9 @@ mod tests {
                 fields: vec![("x".to_string(), Type::Integer)],
             }),*/
             (define (foo x:Integer k:Type::continuation(Integer))
-                (if false (k x) (k x)))
+                (k x))
             (define (main k:Type::continuation(Integer))
-                (foo (if true 42 42) k))
+                (foo 42 k))
         };
         program.check(&HashMap::new());
 

@@ -10,6 +10,7 @@ const HEAP_ADDR0_VALUE: Int = 1337;
 const RELOC_MARKER: Int = Int::MAX;
 
 /// Allocator to complement the CopyCollector
+#[derive(Debug)]
 pub struct CopyAllocator;
 
 impl Allocator for CopyAllocator {
