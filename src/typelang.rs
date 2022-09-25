@@ -539,6 +539,13 @@ mod tests {
             )
         };
 
+        (@expr (close ($($free:ident)*) $func:tt)) => {
+            {
+                todo!();
+                Reference("TODO".to_string())
+            }
+        };
+
         (@expr (lambda ($($a:ident:$t:tt)*) $body:tt)) => {
             Lambda{
                 params: vec![$((stringify!($a).to_string(), tl![@type $t])),*],
@@ -662,9 +669,9 @@ mod tests {
     #[test]
     fn function_with_continuation_passed() {
         let program = tl! {
-            (define (add a:Integer b:Integer k:(continuation Integer))
+            (define (add a:Integer b:Integer k:(-> Integer))
                 (k (+ a b)))
-            (define (main k:(continuation Integer))
+            (define (main k:(-> Integer))
                 (add 1 2 k))
         };
 
@@ -675,11 +682,25 @@ mod tests {
     fn anonymous_first_class_function() {
         let program = tl! {
             (define (func f:(->)) (f))
-            (define (main k:(continuation Integer))
+            (define (main k:(-> Integer))
                 (func (lambda () (__halt 666))))
         };
 
         assert_eq!(run(&program), 666);
+    }
+
+    #[test]
+    fn closure() {
+        let program = tl! {
+            (define (add a:Integer b:Integer k:(-> Integer))
+                (k (+ a b)))
+            (define (func a:Integer b:Integer k:(-> Integer))
+                (add 1 a (close (b k) (lambda (a1:Integer) (add a1 b k)))))
+            (define (main k:(-> Integer))
+                (func 2 4 k))
+        };
+
+        assert_eq!(run(&program), 7);
     }
 
     #[test]
