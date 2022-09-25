@@ -12,12 +12,6 @@ pub enum Type {
     Function(FunType),
 }
 
-impl Type {
-    pub fn continuation(t: Type) -> Self {
-        Type::Function(FunType(vec![t]))
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FunType(Vec<Type>); // no return type because functions never return
 
@@ -62,6 +56,12 @@ struct FunctionDefinition<B: TailStatement> {
     type_: Type,
 }
 
+struct Lambda<B: TailStatement> {
+    params: Vec<(String, Type)>,
+    body: B,
+    type_: Type,
+}
+
 struct RecordDefinition {
     name: String,
     fields: Vec<(String, Type)>,
@@ -89,6 +89,7 @@ struct Operation<A: Expression, B: Expression>(Operator, A, B);
 
 pub enum Operator {
     LessThan,
+    Add,
 }
 
 impl AstNode for Program {
@@ -122,7 +123,10 @@ impl Program {
     fn make_env(&self, env: &Env) -> Env {
         let mut env = assoc(
             "__halt".to_string(),
-            (Binding::Static, Type::continuation(Type::Integer)),
+            (
+                Binding::Static,
+                Type::Function(FunType(vec![Type::Integer])),
+            ),
             env,
         );
 
@@ -150,47 +154,87 @@ impl<B: TailStatement> ToplevelDefinition for FunctionDefinition<B> {
 
 impl<B: TailStatement> AstNode for FunctionDefinition<B> {
     fn compile(&self, env: &Env) -> Vec<Op<String>> {
-        let mut code = vec![Op::label(self.name.clone())];
-        match self.params.len() {
-            0 => {
-                code.extend(self.body.compile(env));
-            }
-            _ => {
-                let (n_primitive, n_pointer, idxmap) =
-                    map_types_to_record_indices(self.params.iter().map(|(_, t)| t));
-                code.push(Op::Alloc(RecordSignature::new(n_primitive, n_pointer)));
-                code.push(Op::SetLocals);
-                for ((_, t), idx) in self.params.iter().zip(idxmap).rev() {
-                    match t {
-                        Type::Record(_) => code.push(Op::PtrToVal),
-                        _ => {}
-                    }
-                    code.push(Op::PopLocal(idx as Int))
-                }
-                code.extend(self.body.compile(&self.extend_env(env)));
-            }
-        }
-        code
+        compile_function(self.name.clone(), &self.params, &self.body, env)
     }
 
     fn check(&self, env: &Env) {
-        let local_env = self.extend_env(env);
+        let local_env = extend_env(&self.params, env);
         self.body.check(&local_env);
         assert_eq!(self.body.type_(&local_env), &Type::Empty);
     }
 }
 
-impl<B: TailStatement> FunctionDefinition<B> {
-    fn extend_env(&self, env: &Env) -> Env {
-        let mut env = env.clone();
+fn extend_env(params: &[(String, Type)], env: &Env) -> Env {
+    let mut env = env.clone();
 
-        let (_, _, idxmap) = map_types_to_record_indices(self.params.iter().map(|(_, t)| t));
+    let (_, _, idxmap) = map_types_to_record_indices(params.iter().map(|(_, t)| t));
 
-        for ((p, t), idx) in self.params.iter().zip(idxmap) {
-            env = assoc(p.clone(), (Binding::Local(idx as Int), t.clone()), &env);
+    for ((p, t), idx) in params.iter().zip(idxmap) {
+        env = assoc(p.clone(), (Binding::Local(idx as Int), t.clone()), &env);
+    }
+
+    env
+}
+
+fn compile_function(
+    name: String,
+    params: &[(String, Type)],
+    body: &impl TailStatement,
+    env: &Env,
+) -> Vec<Op<String>> {
+    let mut code = vec![Op::label(name.clone())];
+    match params.len() {
+        0 => {
+            code.extend(body.compile(env));
         }
+        _ => {
+            let (n_primitive, n_pointer, idxmap) =
+                map_types_to_record_indices(params.iter().map(|(_, t)| t));
+            code.push(Op::Alloc(RecordSignature::new(n_primitive, n_pointer)));
+            code.push(Op::SetLocals);
+            for ((_, t), idx) in params.iter().zip(idxmap).rev() {
+                match t {
+                    Type::Record(_) => code.push(Op::PtrToVal),
+                    _ => {}
+                }
+                code.push(Op::PopLocal(idx as Int))
+            }
+            code.extend(body.compile(&extend_env(params, env)));
+        }
+    }
+    code
+}
 
-        env
+impl<B: TailStatement> AstNode for Lambda<B> {
+    fn compile(&self, env: &Env) -> Vec<Op<String>> {
+        let lambda = unique_label("lambda");
+        let end = format!("end-{}", lambda);
+
+        let mut code = vec![];
+        code.push(Op::goto(end.clone()));
+        code.extend(compile_function(
+            lambda.clone(),
+            &self.params,
+            &self.body,
+            env,
+        ));
+        code.push(Op::label(end));
+        code.push(Op::PushAddr(lambda));
+        code
+    }
+
+    fn check(&self, env: &Env) {
+        let local_env = extend_env(&self.params, env);
+        self.body.check(&local_env);
+        assert_eq!(self.body.type_(&local_env), &Type::Empty);
+    }
+}
+
+impl<B: TailStatement> Expression for Lambda<B> {}
+
+impl<B: TailStatement> Typed for Lambda<B> {
+    fn type_<'a, 'b: 'a>(&'b self, _env: &'a Env) -> &'a Type {
+        &self.type_
     }
 }
 
@@ -371,6 +415,7 @@ impl<A: Expression, B: Expression> AstNode for Operation<A, B> {
         code.extend(self.2.compile(env));
         match self.0 {
             Operator::LessThan => code.push(Op::CallBuiltin(BUILTIN_LT)),
+            Operator::Add => code.push(Op::CallBuiltin(BUILTIN_ADD)),
         }
         code
     }
@@ -383,6 +428,10 @@ impl<A: Expression, B: Expression> AstNode for Operation<A, B> {
                 (self.1.type_(env), self.2.type_(env)),
                 (&Type::Integer, &Type::Integer)
             ),
+            Operator::Add => assert_eq!(
+                (self.1.type_(env), self.2.type_(env)),
+                (&Type::Integer, &Type::Integer)
+            ),
         }
     }
 }
@@ -391,6 +440,7 @@ impl<A: Expression, B: Expression> Typed for Operation<A, B> {
     fn type_<'a, 'b: 'a>(&'b self, _env: &'a Env) -> &'a Type {
         match self.0 {
             Operator::LessThan => &Type::Boolean,
+            Operator::Add => &Type::Integer,
         }
     }
 }
@@ -445,6 +495,7 @@ fn unique_label(name: &str) -> String {
 static LABEL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const BUILTIN_LT: Int = 0;
+const BUILTIN_ADD: Int = 1;
 
 pub fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
     vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
@@ -454,12 +505,14 @@ pub fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC
             0
         }
     });
+    vm.register_builtin(BUILTIN_ADD, "+", |mut ctx| ctx.pop_val() + ctx.pop_val());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vm::{transform_labels, Vm};
+    use Type::*;
 
     macro_rules! tl {
         (@expr (if $cond:tt $cons:tt $alt:tt)) => {
@@ -476,6 +529,22 @@ mod tests {
                 tl!(@expr $a),
                 tl!(@expr $b)
             )
+        };
+
+        (@expr (+ $a:tt $b:tt)) => {
+            Operation(
+                Operator::Add,
+                tl!(@expr $a),
+                tl!(@expr $b)
+            )
+        };
+
+        (@expr (lambda ($($a:ident:$t:tt)*) $body:tt)) => {
+            Lambda{
+                params: vec![$((stringify!($a).to_string(), tl![@type $t])),*],
+                body: tl![@tail $body],
+                type_: Type::Function(FunType(vec![$(tl![@type $t]),*]))
+            }
         };
 
         (@expr true) => {
@@ -509,13 +578,25 @@ mod tests {
             }
         };
 
-        (@topdef (define ($name:ident $($a:ident:$t:expr)*) $body:tt)) => {
+        (@topdef (define ($name:ident $($a:ident:$t:tt)*) $body:tt)) => {
             FunctionDefinition {
                 name: stringify!($name).to_string(),
-                params: vec![$((stringify!($a).to_string(), $t)),*],
+                params: vec![$((stringify!($a).to_string(), tl![@type $t])),*],
                 body: tl![@tail $body],
-                type_: Type::Function(FunType(vec![$($t),*]))
+                type_: Type::Function(FunType(vec![$(tl![@type $t]),*]))
             }
+        };
+
+        (@type (continuation $t:tt)) => {
+            tl![@type (-> $t)]
+        };
+
+        (@type (->  $($t:tt)*)) => {
+            Type::Function(FunType(vec![$(tl![@type $t]),*]))
+        };
+
+        (@type $t:expr) => {
+            $t
         };
 
         ($($topdef:tt)*) => {
@@ -545,11 +626,10 @@ mod tests {
     }
 
     #[test]
-    fn function_without_arguments() {
-        use Type::*;
+    fn function_without_parameters() {
         let program = tl! {
             (define (func) (__halt 123))
-            (define (main k:Type::continuation(Integer))
+            (define (main k:(continuation Integer))
                 (func))
         };
 
@@ -557,16 +637,61 @@ mod tests {
     }
 
     #[test]
+    fn function_with_one_parameter() {
+        let program = tl! {
+            (define (func x:Integer) (__halt x))
+            (define (main k:(continuation Integer))
+                (func 99))
+        };
+
+        assert_eq!(run(&program), 99);
+    }
+
+    #[test]
+    fn function_with_multiple_parameters() {
+        let program = tl! {
+            (define (func a:Integer b:Integer c:Integer d:Integer)
+                (__halt (+ (+ a b) (+ c d))))
+            (define (main k:(continuation Integer))
+                (func 1 2 4 8))
+        };
+
+        assert_eq!(run(&program), 15);
+    }
+
+    #[test]
+    fn function_with_continuation_passed() {
+        let program = tl! {
+            (define (add a:Integer b:Integer k:(continuation Integer))
+                (k (+ a b)))
+            (define (main k:(continuation Integer))
+                (add 1 2 k))
+        };
+
+        assert_eq!(run(&program), 3);
+    }
+
+    #[test]
+    fn anonymous_first_class_function() {
+        let program = tl! {
+            (define (func f:(->)) (f))
+            (define (main k:(continuation Integer))
+                (func (lambda () (__halt 666))))
+        };
+
+        assert_eq!(run(&program), 666);
+    }
+
+    #[test]
     fn run_program() {
-        use Type::*;
         let program = tl! {
             /*Box::new(RecordDefinition {
                 name: "Data".to_string(),
                 fields: vec![("x".to_string(), Type::Integer)],
             }),*/
-            (define (foo x:Integer k:Type::continuation(Integer))
+            (define (foo x:Integer k:(continuation Integer))
                 (k x))
-            (define (main k:Type::continuation(Integer))
+            (define (main k:(continuation Integer))
                 (foo 42 k))
         };
 
@@ -575,13 +700,12 @@ mod tests {
 
     #[test]
     fn fibonacci() {
-        use Type::*;
         let program = tl! {
-            (define (fib n:Integer k:Type::continuation(Integer))
+            (define (fib n:Integer k:(continuation Integer))
                 (if (< n 2)
                     (k 1)
                     (k 8)))
-            (define (main k:Type::continuation(Integer))
+            (define (main k:(continuation Integer))
                 (fib 5 k))
         };
         assert_eq!(run(&program), 8);
