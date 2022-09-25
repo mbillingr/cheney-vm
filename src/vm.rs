@@ -185,6 +185,14 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
         }
     }
 
+    pub fn val_stack(&self) -> &[Int] {
+        &self.val_stack
+    }
+
+    pub fn ptr_stack(&self) -> &[Ptr] {
+        &self.ptr_stack
+    }
+
     pub fn register_builtin(
         &mut self,
         idx: Int,
@@ -195,7 +203,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
         self.builtins.push(BuiltinFunction(func));
     }
 
-    pub fn make_context(&mut self) -> VmContext<AC, GC> {
+    fn make_context(&mut self) -> VmContext<AC, GC> {
         VmContext {
             vm: self,
             may_alloc: true,

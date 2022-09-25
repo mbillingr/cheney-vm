@@ -527,6 +527,35 @@ mod tests {
         };
     }
 
+    fn run(prog: &Program) -> Int {
+        let env = HashMap::new();
+        prog.check(&env);
+        let code = prog.compile(&HashMap::new());
+        /*for op in &code {
+            println!("{:?}", op);
+        }*/
+
+        let code = transform_labels(&code).collect::<Vec<_>>();
+        let mut vm = Vm::default();
+        register_builtins(&mut vm);
+        let res = vm.run(&code);
+        assert!(vm.val_stack().is_empty());
+        assert!(vm.ptr_stack().is_empty());
+        res
+    }
+
+    #[test]
+    fn function_without_arguments() {
+        use Type::*;
+        let program = tl! {
+            (define (func) (__halt 123))
+            (define (main k:Type::continuation(Integer))
+                (func))
+        };
+
+        assert_eq!(run(&program), 123);
+    }
+
     #[test]
     fn run_program() {
         use Type::*;
@@ -540,19 +569,8 @@ mod tests {
             (define (main k:Type::continuation(Integer))
                 (foo 42 k))
         };
-        program.check(&HashMap::new());
 
-        let code = program.compile(&HashMap::new());
-        for op in &code {
-            println!("{:?}", op);
-        }
-
-        let code = transform_labels(&code).collect::<Vec<_>>();
-
-        let mut vm = Vm::default();
-        let res = vm.run(&code);
-
-        assert_eq!(res, 42);
+        assert_eq!(run(&program), 42);
     }
 
     #[test]
@@ -566,20 +584,7 @@ mod tests {
             (define (main k:Type::continuation(Integer))
                 (fib 5 k))
         };
-        program.check(&HashMap::new());
-
-        let code = program.compile(&HashMap::new());
-        for op in &code {
-            println!("{:?}", op);
-        }
-
-        let code = transform_labels(&code).collect::<Vec<_>>();
-
-        let mut vm = Vm::default();
-        register_builtins(&mut vm);
-        let res = vm.run(&code);
-
-        assert_eq!(res, 8);
+        assert_eq!(run(&program), 8);
     }
 }
 
