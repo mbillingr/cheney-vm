@@ -3,3 +3,4 @@
 mod memory;
 pub mod typelang;
 pub mod vm;
+pub mod vmlang;
