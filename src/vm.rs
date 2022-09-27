@@ -31,6 +31,8 @@ pub enum Op<T> {
 
     PushFrom(Int),
     PopInto(Int),
+    PtrPushFrom(Int),
+    PtrPopInto(Int),
 
     DupVal,
 
@@ -77,6 +79,8 @@ impl<T> Op<T> {
             Op::PtrPopLocal(idx) => Op::PtrPopLocal(*idx),
             Op::PushFrom(idx) => Op::PushFrom(*idx),
             Op::PopInto(idx) => Op::PopInto(*idx),
+            Op::PtrPushFrom(idx) => Op::PtrPushFrom(*idx),
+            Op::PtrPopInto(idx) => Op::PtrPopInto(*idx),
             Op::DupVal => Op::DupVal,
             Op::DupPtr => Op::DupPtr,
             Op::NipPtr(i) => Op::NipPtr(*i),
@@ -252,6 +256,11 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::PushFrom(idx) => self.val_stack.push(self.get_field(idx)),
                 Op::PopInto(idx) => {
                     let val = self.val_stack.pop().unwrap();
+                    self.set_field(idx, val);
+                }
+                Op::PtrPushFrom(idx) => self.ptr_stack.push(self.get_field(idx)),
+                Op::PtrPopInto(idx) => {
+                    let val = self.ptr_stack.pop().unwrap();
                     self.set_field(idx, val);
                 }
                 Op::DupVal => {
@@ -436,6 +445,9 @@ mod tests {
     impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
         fn peek(&self, ptr: Int) -> Val {
             let mut ptr = ptr as usize;
+            if ptr == 0 {
+                return Val::Rec(vec![]);
+            }
             let rs = RecordSignature::from_int(self.heap[ptr - 1]);
             let mut data = Vec::with_capacity(rs.size());
 
@@ -542,6 +554,34 @@ mod tests {
 
         assert_eq!(vm.ptr_stack, []);
         assert_eq!(vm.peek(vm.lcl), rec![0, 0, [0]]);
+    }
+
+    #[test]
+    fn test_pointer_push_from() {
+        let mut vm = Vm::default();
+        let ptr1 = vm.alloc(0, 1);
+        vm.ptr_stack.push(ptr1);
+        let ptr2 = vm.alloc(0, 1);
+        vm.poke(ptr1, &[ptr2]);
+
+        let res = vm.run(&[Op::PtrPushFrom(0), Op::Halt]);
+
+        assert_eq!(vm.ptr_stack, [ptr1, ptr2]);
+    }
+
+    #[test]
+    fn test_pointer_pop_into() {
+        let mut vm = Vm::default();
+        let ptr1 = vm.alloc(2, 2);
+        vm.ptr_stack.push(ptr1);
+        let ptr2 = vm.alloc(3, 0);
+        vm.ptr_stack.push(ptr2);
+        vm.poke(ptr2, &[1, 2, 3]);
+
+        let res = vm.run(&[Op::PtrPopInto(2), Op::Halt]);
+
+        assert_eq!(vm.ptr_stack, [ptr1]);
+        assert_eq!(vm.peek(ptr1), rec![0, 0, [1, 2, 3], []]);
     }
 
     #[test]
