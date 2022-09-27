@@ -8,6 +8,7 @@ enum IntExpression {
     Const(Int),
     Ref(String),
     If(Box<IntExpression>, Box<IntExpression>, Box<IntExpression>),
+    Lambda(Vec<IntExpression>, Vec<PtrExpression>, Box<TailStatement>),
 }
 
 #[derive(Debug)]
@@ -20,6 +21,7 @@ enum PtrExpression {
 
 #[derive(Debug)]
 enum TailStatement {
+    Halt(IntExpression),
     //Call(Expression, Vec<Expression>),
     StaticCall(String, Vec<IntExpression>, Vec<PtrExpression>),
     If(IntExpression, Box<TailStatement>, Box<TailStatement>),
@@ -60,9 +62,23 @@ impl Compilable for IntExpression {
             }
             IntExpression::Ref(ident) => match env.lookup(ident) {
                 None => panic!("unbound identifier {ident}"),
-                Some(Binding::Local(idx)) => vec![Op::PushLocal(*idx)],
-                x => todo!("{x:?}"),
+                Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
+                Some(_) => panic!("{ident} is not a value variable"),
             },
+            IntExpression::Lambda(int_args, ptr_args, body) => {
+                let local_env = env.clone();
+
+                let lam_label = compiler.unique_label("lambda");
+                let end_label = compiler.unique_label("end-lambda");
+                concat!(
+                    vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())],
+                    body.compile(&local_env, compiler),
+                    [
+                        Op::Label(end_label.clone()),
+                        Op::PushAddr(lam_label.clone())
+                    ]
+                )
+            }
             _ => todo!("{self:?}"),
         }
     }
@@ -75,9 +91,18 @@ impl Compilable for PtrExpression {
             PtrExpression::Record(ints, ptrs) => compiler.compile_record(ints, ptrs, env),
             PtrExpression::Ref(ident) => match env.lookup(ident) {
                 None => panic!("unbound identifier {ident}"),
-                Some(Binding::Local(idx)) => vec![Op::PtrPushLocal(*idx)],
-                x => todo!("{x:?}"),
+                Some(Binding::LocalPtr(idx)) => vec![Op::PtrPushLocal(*idx)],
+                Some(_) => panic!("{ident} is not a pointer variable"),
             },
+            _ => todo!("{self:?}"),
+        }
+    }
+}
+
+impl Compilable for TailStatement {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        match self {
+            TailStatement::Halt(expr) => concat!(expr.compile(env, compiler), [Op::Halt]),
             _ => todo!("{self:?}"),
         }
     }
@@ -133,7 +158,8 @@ impl Compiler {
 
 #[derive(Debug)]
 enum Binding {
-    Local(Int),
+    LocalVal(Int),
+    LocalPtr(Int),
 }
 
 #[derive(Debug, Clone)]
@@ -195,7 +221,7 @@ mod tests {
 
     #[test]
     fn compile_int_reference() {
-        let env = Env::Empty.assoc("foo", Binding::Local(7));
+        let env = Env::Empty.assoc("foo", Binding::LocalVal(7));
         assert_eq!(
             Compiler::new().compile(IntExpression::Ref("foo".to_string()), &env),
             vec![Op::PushLocal(7)]
@@ -204,11 +230,29 @@ mod tests {
 
     #[test]
     fn compile_ptr_reference() {
-        let env = Env::Empty.assoc("foo", Binding::Local(5));
+        let env = Env::Empty.assoc("foo", Binding::LocalPtr(5));
         assert_eq!(
             Compiler::new().compile(PtrExpression::Ref("foo".to_string()), &env),
             vec![Op::PtrPushLocal(5)]
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn compile_wrong_reference1() {
+        let env = Env::Empty
+            .assoc("foo", Binding::LocalVal(0))
+            .assoc("bar", Binding::LocalPtr(1));
+        Compiler::new().compile(PtrExpression::Ref("foo".to_string()), &env);
+    }
+
+    #[test]
+    #[should_panic]
+    fn compile_wrong_reference2() {
+        let env = Env::Empty
+            .assoc("foo", Binding::LocalVal(0))
+            .assoc("bar", Binding::LocalPtr(1));
+        Compiler::new().compile(IntExpression::Ref("bar".to_string()), &env);
     }
 
     #[test]
@@ -240,5 +284,35 @@ mod tests {
                 Op::PtrPopInto(2),
             ]
         );
+    }
+
+    #[test]
+    fn compile_nullary_lambda() {
+        let code = Compiler::new().compile(
+            IntExpression::Lambda(
+                vec![],
+                vec![],
+                Box::new(TailStatement::Halt(IntExpression::Const(42))),
+            ),
+            &Env::Empty,
+        );
+
+        assert_eq!(
+            code,
+            vec![
+                Op::goto("end-lambda-1"),
+                Op::label("lambda-0"),
+                Op::Const(42),
+                Op::Halt,
+                Op::label("end-lambda-1"),
+                Op::PushAddr("lambda-0".to_string()),
+            ]
+        );
+
+        match &code[..] {
+            [Op::Goto(goto_end), Op::Label(label_def), Op::Const(42), Op::Halt, Op::Label(label_end), Op::PushAddr(get_def)]
+                if goto_end == label_end && get_def == label_def => {} // Ok
+            _ => panic!("{:?}", code),
+        }
     }
 }
