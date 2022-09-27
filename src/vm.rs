@@ -36,8 +36,9 @@ pub enum Op<T> {
 
     DupVal,
 
-    DupPtr,
-    NipPtr(Int),
+    PtrDup,
+    PtrNip(Int),
+    PtrPeek(Int),
 
     PtrToVal,
     ValToPtr,
@@ -82,8 +83,9 @@ impl<T> Op<T> {
             Op::PtrPushFrom(idx) => Op::PtrPushFrom(*idx),
             Op::PtrPopInto(idx) => Op::PtrPopInto(*idx),
             Op::DupVal => Op::DupVal,
-            Op::DupPtr => Op::DupPtr,
-            Op::NipPtr(i) => Op::NipPtr(*i),
+            Op::PtrDup => Op::PtrDup,
+            Op::PtrNip(i) => Op::PtrNip(*i),
+            Op::PtrPeek(i) => Op::PtrPeek(*i),
             Op::PtrToVal => Op::PtrToVal,
             Op::ValToPtr => Op::ValToPtr,
         }
@@ -268,14 +270,19 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                     self.val_stack.push(val);
                     self.val_stack.push(val);
                 }
-                Op::DupPtr => {
+                Op::PtrDup => {
                     let ptr = self.ptr_stack.pop().unwrap();
                     self.ptr_stack.push(ptr);
                     self.ptr_stack.push(ptr);
                 }
-                Op::NipPtr(i) => {
+                Op::PtrNip(i) => {
                     let ptr = self.ptr_stack.remove(self.ptr_stack.len() - 1 - i as usize);
                     self.ptr_stack.push(ptr);
+                }
+                Op::PtrPeek(i) => {
+                    let ptr = self
+                        .ptr_stack
+                        .push(self.ptr_stack[self.ptr_stack.len() - 1 - i as usize]);
                 }
                 Op::PtrToVal => self.val_stack.push(self.ptr_stack.pop().unwrap()),
                 Op::ValToPtr => self.ptr_stack.push(self.val_stack.pop().unwrap()),
@@ -672,7 +679,7 @@ mod tests {
             Op::Const(0),
             Op::PopInto(0),
             Op::Alloc(rs),
-            Op::NipPtr(1),
+            Op::PtrNip(1),
             Op::PtrToVal,
             Op::PopInto(0),
             Op::Halt,
@@ -701,7 +708,7 @@ mod tests {
             Op::Const(0),
             Op::PopInto(1),
             Op::Alloc(rs),
-            Op::NipPtr(1),
+            Op::PtrNip(1),
             Op::PtrToVal,
             Op::DupVal,
             Op::PopInto(0),
@@ -725,14 +732,14 @@ mod tests {
         let irs = rs.as_int();
         vm.run(&[
             Op::Alloc(rs),
-            Op::DupPtr,
+            Op::PtrDup,
             Op::PtrToVal,
             Op::PopInto(1),
             Op::Const(111),
             Op::PopInto(0),
             Op::PtrToVal, // "drop" pointer
             Op::Alloc(rs),
-            Op::DupPtr,
+            Op::PtrDup,
             Op::PtrToVal,
             Op::PopInto(1),
             Op::Const(222),

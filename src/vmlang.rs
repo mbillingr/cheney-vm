@@ -8,7 +8,7 @@ enum IntExpression {
     Const(Int),
     Ref(String),
     If(Box<IntExpression>, Box<IntExpression>, Box<IntExpression>),
-    Lambda(Vec<IntExpression>, Vec<PtrExpression>, Box<TailStatement>),
+    Lambda(Vec<String>, Vec<String>, Box<TailStatement>),
 }
 
 #[derive(Debug)]
@@ -65,13 +65,35 @@ impl Compilable for IntExpression {
                 Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
                 Some(_) => panic!("{ident} is not a value variable"),
             },
-            IntExpression::Lambda(int_args, ptr_args, body) => {
-                let local_env = env.clone();
-
+            IntExpression::Lambda(val_args, ptr_args, body) => {
                 let lam_label = compiler.unique_label("lambda");
                 let end_label = compiler.unique_label("end-lambda");
+                let mut code = vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())];
+
+                let mut local_env = env.clone();
+                let mut idx = (val_args.len() + ptr_args.len()) as Int;
+
+                if idx > 0 {
+                    code.push(Op::Alloc(RecordSignature::new(
+                        val_args.len() as Half,
+                        ptr_args.len() as Half,
+                    )));
+                }
+
+                for pa in ptr_args.iter().rev() {
+                    idx -= 1;
+                    local_env = local_env.assoc(pa, Binding::LocalPtr(idx));
+                    code.extend([Op::PtrPeek(1), Op::PtrPopInto(idx)]);
+                }
+
+                for pa in val_args.iter().rev() {
+                    idx -= 1;
+                    local_env = local_env.assoc(pa, Binding::LocalVal(idx));
+                    code.extend([Op::PopInto(idx)]);
+                }
+
                 concat!(
-                    vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())],
+                    code,
                     body.compile(&local_env, compiler),
                     [
                         Op::Label(end_label.clone()),
@@ -297,21 +319,30 @@ mod tests {
             &Env::Empty,
         );
 
-        assert_eq!(
-            code,
-            vec![
-                Op::goto("end-lambda-1"),
-                Op::label("lambda-0"),
-                Op::Const(42),
-                Op::Halt,
-                Op::label("end-lambda-1"),
-                Op::PushAddr("lambda-0".to_string()),
-            ]
-        );
-
         match &code[..] {
             [Op::Goto(goto_end), Op::Label(label_def), Op::Const(42), Op::Halt, Op::Label(label_end), Op::PushAddr(get_def)]
                 if goto_end == label_end && get_def == label_def => {} // Ok
+            _ => panic!("{:?}", code),
+        }
+    }
+
+    #[test]
+    fn compile_nary_lambda() {
+        let code = Compiler::new().compile(
+            IntExpression::Lambda(
+                vec!["a".to_string(), "b".to_string()],
+                vec!["x".to_string(), "y".to_string()],
+                Box::new(TailStatement::Halt(IntExpression::Const(42))),
+            ),
+            &Env::Empty,
+        );
+
+        match &code[..] {
+            [Op::Goto(goto_end), Op::Label(label_def), Op::Alloc(rs), Op::PtrPeek(1), Op::PtrPopInto(3), Op::PtrPeek(1), Op::PtrPopInto(2), Op::PopInto(1), Op::PopInto(0), Op::Const(42), Op::Halt, Op::Label(label_end), Op::PushAddr(get_def)]
+                if goto_end == label_end
+                    && get_def == label_def
+                    && rs.n_primitive() == 2
+                    && rs.n_pointer() == 2 => {} // Ok
             _ => panic!("{:?}", code),
         }
     }
