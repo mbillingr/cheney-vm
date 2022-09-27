@@ -12,6 +12,7 @@ enum IntExpression {
 
 #[derive(Debug)]
 enum PtrExpression {
+    Null,
     Record(Vec<IntExpression>, Vec<PtrExpression>),
     Ref(String),
     If(IntExpression, Box<PtrExpression>, Box<PtrExpression>),
@@ -70,10 +71,11 @@ impl Compilable for IntExpression {
 impl Compilable for PtrExpression {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         match self {
+            PtrExpression::Null => vec![Op::Const(0), Op::ValToPtr],
             PtrExpression::Record(ints, ptrs) => compiler.compile_record(ints, ptrs, env),
             PtrExpression::Ref(ident) => match env.lookup(ident) {
                 None => panic!("unbound identifier {ident}"),
-                Some(Binding::Local(idx)) => vec![todo!("need ptr-stack equivalent of PushLocal")],
+                Some(Binding::Local(idx)) => vec![Op::PtrPushLocal(*idx)],
                 x => todo!("{x:?}"),
             },
             _ => todo!("{self:?}"),
@@ -116,7 +118,7 @@ impl Compiler {
         }
         for px in ptrs {
             code.extend(px.compile(env, self));
-            code.extend([todo!("need ptr-stack equivalent of PopInto")]);
+            code.extend([Op::PtrPopInto(idx)]);
             idx += 1;
         }
         code
@@ -202,10 +204,18 @@ mod tests {
 
     #[test]
     fn compile_ptr_reference() {
-        let env = Env::Empty.assoc("foo", Binding::Local(7));
+        let env = Env::Empty.assoc("foo", Binding::Local(5));
         assert_eq!(
             Compiler::new().compile(PtrExpression::Ref("foo".to_string()), &env),
-            vec![todo!("need ptr-stack equivalent of PushLocal")]
+            vec![Op::PtrPushLocal(5)]
+        );
+    }
+
+    #[test]
+    fn compile_null_ptr() {
+        assert_eq!(
+            Compiler::new().compile(PtrExpression::Null, &Env::Empty),
+            vec![Op::Const(0), Op::ValToPtr]
         );
     }
 
@@ -215,16 +225,19 @@ mod tests {
             Compiler::new().compile(
                 PtrExpression::Record(
                     vec![IntExpression::Const(1), IntExpression::Const(2)],
-                    vec![]
+                    vec![PtrExpression::Null],
                 ),
                 &Env::Empty
             ),
             vec![
-                Op::Alloc(RecordSignature::new(2, 0)),
+                Op::Alloc(RecordSignature::new(2, 1)),
                 Op::Const(1),
                 Op::PopInto(0),
                 Op::Const(2),
-                Op::PopInto(1)
+                Op::PopInto(1),
+                Op::Const(0),
+                Op::ValToPtr,
+                Op::PtrPopInto(2),
             ]
         );
     }
