@@ -39,9 +39,9 @@ impl Allocator for CopyAllocator {
         heap.push(rs.as_int());
 
         // block data
-        for _ in 0..rs.size() {
-            heap.push(0);
-        }
+        // we make sure to initialize newly allocated memory to 0 so the GC won't try to
+        // preserve any uninitialized pointers.
+        heap.extend(vec![0; rs.size()]);
 
         (BLOCK_HEADER_SIZE + ptr) as Int
     }

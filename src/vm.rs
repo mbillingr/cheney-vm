@@ -26,6 +26,8 @@ pub enum Op<T> {
     SetLocals,
     PushLocal(Int),
     PopLocal(Int),
+    PtrPushLocal(Int),
+    PtrPopLocal(Int),
 
     PushFrom(Int),
     PopInto(Int),
@@ -71,6 +73,8 @@ impl<T> Op<T> {
             Op::SetLocals => Op::SetLocals,
             Op::PushLocal(idx) => Op::PushLocal(*idx),
             Op::PopLocal(idx) => Op::PopLocal(*idx),
+            Op::PtrPushLocal(idx) => Op::PtrPushLocal(*idx),
+            Op::PtrPopLocal(idx) => Op::PtrPopLocal(*idx),
             Op::PushFrom(idx) => Op::PushFrom(*idx),
             Op::PopInto(idx) => Op::PopInto(*idx),
             Op::DupVal => Op::DupVal,
@@ -240,6 +244,11 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                     let val = self.val_stack.pop().unwrap();
                     self.set_local(idx, val);
                 }
+                Op::PtrPushLocal(idx) => self.ptr_stack.push(self.get_local(idx)),
+                Op::PtrPopLocal(idx) => {
+                    let val = self.ptr_stack.pop().unwrap();
+                    self.set_local(idx, val);
+                }
                 Op::PushFrom(idx) => self.val_stack.push(self.get_field(idx)),
                 Op::PopInto(idx) => {
                     let val = self.val_stack.pop().unwrap();
@@ -383,6 +392,73 @@ mod tests {
         );
     }
 
+    #[derive(Eq, PartialEq)]
+    enum Val {
+        Int(Int),
+        Rec(Vec<Val>),
+    }
+
+    impl Debug for Val {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Val::Int(x) => x.fmt(f),
+                Val::Rec(xs) => {
+                    write!(f, "[")?;
+                    let mut xs = xs.iter();
+                    if let Some(x) = xs.next() {
+                        x.fmt(f)?;
+                    }
+                    for x in xs {
+                        write!(f, ", {:?}", x)?;
+                    }
+                    write!(f, "]")
+                }
+            }
+        }
+    }
+
+    macro_rules! rec {
+        ($($x:tt),*) => {
+            Val::Rec(vec![$(val![$x]),*])
+        };
+    }
+
+    macro_rules! val {
+        ([$($x:tt),*]) => {
+            rec![$($x),*]
+        };
+
+        ($x:expr) => {
+            Val::Int($x)
+        };
+    }
+
+    impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
+        fn peek(&self, ptr: Int) -> Val {
+            let mut ptr = ptr as usize;
+            let rs = RecordSignature::from_int(self.heap[ptr - 1]);
+            let mut data = Vec::with_capacity(rs.size());
+
+            for _ in 0..rs.n_primitive() {
+                data.push(Val::Int(self.heap[ptr]));
+                ptr += 1;
+            }
+
+            for _ in 0..rs.n_pointer() {
+                data.push(self.peek(self.heap[ptr]));
+                ptr += 1;
+            }
+
+            Val::Rec(data)
+        }
+
+        fn poke(&mut self, ptr: Int, data: &[Int]) {
+            let mut ptr = ptr as usize;
+            let rs = RecordSignature::from_int(self.heap[ptr - 1]);
+            self.heap[ptr..ptr + data.len()].copy_from_slice(data);
+        }
+    }
+
     #[test]
     fn test_run_trivial_program() {
         let mut vm = Vm::default();
@@ -390,6 +466,82 @@ mod tests {
         let res = vm.run(&[Op::Const(42), Op::Halt]);
 
         assert_eq!(res, 42);
+    }
+
+    #[test]
+    fn test_push_local() {
+        let mut vm = Vm::default();
+        vm.lcl = vm.alloc(3, 0);
+        vm.poke(vm.lcl, &[10, 11, 12]);
+
+        let res = vm.run(&[Op::PushLocal(1), Op::Halt]);
+
+        assert_eq!(res, 11);
+    }
+
+    #[test]
+    fn test_pop_local() {
+        let mut vm = Vm::default();
+        vm.lcl = vm.alloc(3, 0);
+        vm.poke(vm.lcl, &[10, 11, 12]);
+        vm.val_stack = vec![42];
+
+        let res = vm.run(&[Op::PopLocal(2), Op::Halt]);
+
+        assert_eq!(vm.val_stack, []);
+        assert_eq!(vm.peek(vm.lcl), rec![10, 11, 42]);
+    }
+
+    #[test]
+    fn test_push_from() {
+        let mut vm = Vm::default();
+        let ptr = vm.alloc(3, 0);
+        vm.ptr_stack.push(ptr);
+        vm.poke(ptr, &[10, 11, 12]);
+
+        let res = vm.run(&[Op::PushFrom(1), Op::Halt]);
+
+        assert_eq!(res, 11);
+    }
+
+    #[test]
+    fn test_pop_into() {
+        let mut vm = Vm::default();
+        let ptr = vm.alloc(3, 0);
+        vm.ptr_stack.push(ptr);
+        vm.poke(ptr, &[10, 11, 12]);
+        vm.val_stack = vec![42];
+
+        let res = vm.run(&[Op::PopInto(2), Op::Halt]);
+
+        assert_eq!(vm.val_stack, []);
+        assert_eq!(vm.peek(ptr), rec![10, 11, 42]);
+    }
+
+    #[test]
+    fn test_pointer_push_local() {
+        let mut vm = Vm::default();
+        vm.lcl = vm.alloc(2, 1);
+        let ptr = vm.alloc(1, 0);
+        vm.poke(ptr, &[33]);
+        vm.poke(vm.lcl, &[11, 22, ptr]);
+
+        let res = vm.run(&[Op::PtrPushLocal(2), Op::Halt]);
+
+        assert_eq!(vm.ptr_stack, [ptr]);
+    }
+
+    #[test]
+    fn test_pointer_pop_local() {
+        let mut vm = Vm::default();
+        vm.lcl = vm.alloc(2, 1);
+        let ptr = vm.alloc(1, 0);
+        vm.ptr_stack.push(ptr);
+
+        let res = vm.run(&[Op::PtrPopLocal(2), Op::Halt]);
+
+        assert_eq!(vm.ptr_stack, []);
+        assert_eq!(vm.peek(vm.lcl), rec![0, 0, [0]]);
     }
 
     #[test]
