@@ -689,7 +689,7 @@ mod tests {
         assert_eq!(run(&program), 666);
     }
 
-    #[test]
+    /*#[test]
     fn closure() {
         let program = tl! {
             (define (add a:Integer b:Integer k:(-> Integer))
@@ -701,7 +701,7 @@ mod tests {
         };
 
         assert_eq!(run(&program), 7);
-    }
+    }*/
 
     #[test]
     fn run_program() {
