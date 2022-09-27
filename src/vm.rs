@@ -280,7 +280,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                     self.ptr_stack.push(ptr);
                 }
                 Op::PtrPeek(i) => {
-                    let ptr = self
+                    self
                         .ptr_stack
                         .push(self.ptr_stack[self.ptr_stack.len() - 1 - i as usize]);
                 }
@@ -472,8 +472,9 @@ mod tests {
         }
 
         fn poke(&mut self, ptr: Int, data: &[Int]) {
-            let mut ptr = ptr as usize;
+            let ptr = ptr as usize;
             let rs = RecordSignature::from_int(self.heap[ptr - 1]);
+            assert!(data.len() <= rs.size());
             self.heap[ptr..ptr + data.len()].copy_from_slice(data);
         }
     }
@@ -505,7 +506,7 @@ mod tests {
         vm.poke(vm.lcl, &[10, 11, 12]);
         vm.val_stack = vec![42];
 
-        let res = vm.run(&[Op::PopLocal(2), Op::Halt]);
+        vm.run(&[Op::PopLocal(2), Op::Halt]);
 
         assert_eq!(vm.val_stack, []);
         assert_eq!(vm.peek(vm.lcl), rec![10, 11, 42]);
@@ -531,7 +532,7 @@ mod tests {
         vm.poke(ptr, &[10, 11, 12]);
         vm.val_stack = vec![42];
 
-        let res = vm.run(&[Op::PopInto(2), Op::Halt]);
+        vm.run(&[Op::PopInto(2), Op::Halt]);
 
         assert_eq!(vm.val_stack, []);
         assert_eq!(vm.peek(ptr), rec![10, 11, 42]);
@@ -545,7 +546,7 @@ mod tests {
         vm.poke(ptr, &[33]);
         vm.poke(vm.lcl, &[11, 22, ptr]);
 
-        let res = vm.run(&[Op::PtrPushLocal(2), Op::Halt]);
+        vm.run(&[Op::PtrPushLocal(2), Op::Halt]);
 
         assert_eq!(vm.ptr_stack, [ptr]);
     }
@@ -557,7 +558,7 @@ mod tests {
         let ptr = vm.alloc(1, 0);
         vm.ptr_stack.push(ptr);
 
-        let res = vm.run(&[Op::PtrPopLocal(2), Op::Halt]);
+        vm.run(&[Op::PtrPopLocal(2), Op::Halt]);
 
         assert_eq!(vm.ptr_stack, []);
         assert_eq!(vm.peek(vm.lcl), rec![0, 0, [0]]);
@@ -571,7 +572,7 @@ mod tests {
         let ptr2 = vm.alloc(0, 1);
         vm.poke(ptr1, &[ptr2]);
 
-        let res = vm.run(&[Op::PtrPushFrom(0), Op::Halt]);
+        vm.run(&[Op::PtrPushFrom(0), Op::Halt]);
 
         assert_eq!(vm.ptr_stack, [ptr1, ptr2]);
     }
@@ -585,7 +586,7 @@ mod tests {
         vm.ptr_stack.push(ptr2);
         vm.poke(ptr2, &[1, 2, 3]);
 
-        let res = vm.run(&[Op::PtrPopInto(2), Op::Halt]);
+        vm.run(&[Op::PtrPopInto(2), Op::Halt]);
 
         assert_eq!(vm.ptr_stack, [ptr1]);
         assert_eq!(vm.peek(ptr1), rec![0, 0, [1, 2, 3], []]);

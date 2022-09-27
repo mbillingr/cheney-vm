@@ -101,7 +101,6 @@ impl Compilable for IntExpression {
                     ]
                 )
             }
-            _ => todo!("{self:?}"),
         }
     }
 }
