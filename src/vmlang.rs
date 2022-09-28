@@ -12,13 +12,27 @@ macro_rules! mark {
     }
 }
 
+macro_rules! join {
+    () => { vec![] };
+    ($x:expr) => { $x };
+    ($first:expr, $($more:expr),*) => {
+        {
+            let mut items = $first;
+            $(
+                items.extend($more);
+            )*
+            items
+        }
+    };
+}
+
 trait Ast: Debug + Compilable {}
 trait IntExpression_: Ast {}
 trait PtrExpression_: Ast {}
 trait TailStatement_: Ast {}
 
 mark!(Ast: Const, IntExpression, PtrExpression, TailStatement);
-mark!(IntExpression_: Const, IntExpression);
+mark!(IntExpression_: IntExpression, Const);
 mark!(PtrExpression_: PtrExpression);
 mark!(TailStatement_: TailStatement);
 
@@ -32,13 +46,45 @@ impl Compilable for Const {
 }
 
 #[derive(Debug)]
+struct IntIf<A, B, C> {
+    condition: A,
+    consequence: B,
+    alternative: C,
+}
+
+impl<A: IntExpression_, B: IntExpression_, C: IntExpression_> IntIf<A, B, C> {
+    fn new(condition: A, consequence: B, alternative: C) -> Self {
+        IntIf {
+            condition,
+            consequence,
+            alternative,
+        }
+    }
+}
+
+impl<A: IntExpression_, B: IntExpression_, C: IntExpression_> Ast for IntIf<A, B, C> {}
+impl<A: IntExpression_, B: IntExpression_, C: IntExpression_> IntExpression_ for IntIf<A, B, C> {}
+impl<A: IntExpression_, B: IntExpression_, C: IntExpression_> Compilable for IntIf<A, B, C> {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let else_label = compiler.unique_label("elif");
+        let end_label = compiler.unique_label("endif");
+        let cond = self.condition.compile(env, compiler);
+        let cons = self.consequence.compile(env, compiler);
+        let alt = self.alternative.compile(env, compiler);
+        join!(
+            cond,
+            [Op::GoIfZero(else_label.clone())],
+            cons,
+            [Op::Goto(end_label.clone()), Op::Label(else_label)],
+            alt,
+            [Op::Label(end_label)]
+        )
+    }
+}
+
+#[derive(Debug)]
 enum IntExpression {
     Ref(String),
-    If(
-        Box<dyn IntExpression_>,
-        Box<dyn IntExpression_>,
-        Box<dyn IntExpression_>,
-    ),
     Lambda(Vec<String>, Vec<String>, Box<dyn TailStatement_>),
 }
 
@@ -70,38 +116,9 @@ enum TailStatement {
     ),
 }
 
-macro_rules! concat {
-    () => { vec![] };
-    ($x:expr) => { $x };
-    ($first:expr, $($more:expr),*) => {
-        {
-            let mut items = $first;
-            $(
-                items.extend($more);
-            )*
-            items
-        }
-    };
-}
-
 impl Compilable for IntExpression {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         match self {
-            IntExpression::If(condition, consequence, alternative) => {
-                let else_label = compiler.unique_label("elif");
-                let end_label = compiler.unique_label("endif");
-                let cond = condition.compile(env, compiler);
-                let cons = consequence.compile(env, compiler);
-                let alt = alternative.compile(env, compiler);
-                concat!(
-                    cond,
-                    [Op::GoIfZero(else_label.clone())],
-                    cons,
-                    [Op::Goto(end_label.clone()), Op::Label(else_label)],
-                    alt,
-                    [Op::Label(end_label)]
-                )
-            }
             IntExpression::Ref(ident) => match env.lookup(ident) {
                 None => panic!("unbound identifier {ident}"),
                 Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
@@ -134,7 +151,7 @@ impl Compilable for IntExpression {
                     code.extend([Op::PopInto(idx)]);
                 }
 
-                concat!(
+                join!(
                     code,
                     body.compile(&local_env, compiler),
                     [
@@ -165,7 +182,7 @@ impl Compilable for PtrExpression {
 impl Compilable for TailStatement {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         match self {
-            TailStatement::Halt(expr) => concat!(expr.compile(env, compiler), [Op::Halt]),
+            TailStatement::Halt(expr) => join!(expr.compile(env, compiler), [Op::Halt]),
             _ => todo!("{self:?}"),
         }
     }
@@ -265,10 +282,7 @@ mod tests {
 
     #[test]
     fn compile_int_conditional() {
-        let code = Compiler::new().compile(
-            IntExpression::If(Box::new(Const(0)), Box::new(Const(1)), Box::new(Const(2))),
-            &Env::Empty,
-        );
+        let code = Compiler::new().compile(IntIf::new(Const(0), Const(1), Const(2)), &Env::Empty);
         match code.as_slice() {
             [Op::Const(0), Op::GoIfZero(else_target), Op::Const(1), Op::Goto(end_target), Op::Label(else_label), Op::Const(2), Op::Label(end_label)]
                 if else_target == else_label
