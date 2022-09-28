@@ -37,12 +37,15 @@ trait ValExpression: Ast {}
 trait PtrExpression: Ast {}
 trait TailStatement_: Ast {}
 
+trait Compilable {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>>;
+}
+
 mark!(
     Ast: Const,
     ValRef,
     Lambda,
     ValIf,
-    TailStatement,
     PtrNull,
     PtrRef,
     Record,
@@ -50,7 +53,7 @@ mark!(
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
 mark!(PtrExpression: PtrNull, PtrRef, Record);
-mark!(TailStatement_: Halt, TailStatement);
+mark!(TailStatement_: Halt);
 
 #[derive(Debug)]
 struct Const(Int);
@@ -222,6 +225,13 @@ impl Compilable for Halt {
     }
 }
 
+#[derive(Debug)]
+struct StaticCall {
+    function: String,
+    var_args: Vec<Box<dyn ValExpression>>,
+    ptr_args: Vec<Box<dyn PtrExpression>>,
+}
+
 macro_rules! define_if {
     ($tname:ident, $t:path, tail=false) => {
         define_if!(@struct $tname, $t);
@@ -297,28 +307,6 @@ macro_rules! define_if {
 define_if!(ValIf, ValExpression, tail = false);
 define_if!(PtrIf, PtrExpression, tail = false);
 define_if!(TailIf, TailStatement_, tail = true);
-
-#[derive(Debug)]
-enum TailStatement {
-    //Call(Expression, Vec<Expression>),
-    StaticCall(
-        String,
-        Vec<Box<dyn ValExpression>>,
-        Vec<Box<dyn PtrExpression>>,
-    ),
-}
-
-impl Compilable for TailStatement {
-    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        match self {
-            _ => todo!("{self:?}"),
-        }
-    }
-}
-
-trait Compilable {
-    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>>;
-}
 
 struct Compiler {
     unique_counter: u64,
