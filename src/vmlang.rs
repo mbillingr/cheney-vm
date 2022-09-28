@@ -12,6 +12,12 @@ macro_rules! mark {
     }
 }
 
+macro_rules! boxvec {
+    ($($x:expr),*) => {
+        vec![$(Box::new($x)),*]
+    }
+}
+
 macro_rules! join {
     () => { vec![] };
     ($x:expr) => { $x };
@@ -27,7 +33,7 @@ macro_rules! join {
 }
 
 trait Ast: Debug + Compilable {}
-trait IntExpression_: Ast {}
+trait ValExpression: Ast {}
 trait PtrExpression_: Ast {}
 trait TailStatement_: Ast {}
 
@@ -36,10 +42,11 @@ mark!(
     IntIf,
     IntExpression,
     PtrExpression,
-    TailStatement
+    TailStatement,
+    PtrNull
 );
-mark!(IntExpression_: IntExpression, Const, IntIf);
-mark!(PtrExpression_: PtrExpression);
+mark!(ValExpression: IntExpression, Const, IntIf, PtrNull);
+mark!(PtrExpression_: PtrExpression, PtrNull);
 mark!(TailStatement_: TailStatement);
 
 #[derive(Debug)]
@@ -48,6 +55,15 @@ struct Const(Int);
 impl Compilable for Const {
     fn compile(&self, _env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
         vec![Op::Const(self.0)]
+    }
+}
+
+#[derive(Debug)]
+struct PtrNull;
+
+impl Compilable for PtrNull {
+    fn compile(&self, _env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
+        vec![Op::Const(0), Op::ValToPtr]
     }
 }
 
@@ -64,14 +80,14 @@ macro_rules! define_if {
     (@struct $tname:ident, $t:path) => {
         #[derive(Debug)]
         struct $tname {
-            condition: Box<dyn IntExpression_>,
+            condition: Box<dyn ValExpression>,
             consequence: Box<dyn $t>,
             alternative: Box<dyn $t>,
         }
 
         impl $tname {
             fn new(
-                condition: impl IntExpression_ + 'static,
+                condition: impl ValExpression + 'static,
                 consequence: impl $t + 'static,
                 alternative: impl $t + 'static,
             ) -> Self {
@@ -123,7 +139,7 @@ macro_rules! define_if {
     }
 }
 
-define_if!(IntIf, IntExpression_, tail = false);
+define_if!(IntIf, ValExpression, tail = false);
 define_if!(PtrIf, PtrExpression_, tail = false);
 define_if!(TailIf, TailStatement_, tail = true);
 
@@ -135,18 +151,17 @@ enum IntExpression {
 
 #[derive(Debug)]
 enum PtrExpression {
-    Null,
-    Record(Vec<Box<dyn IntExpression_>>, Vec<Box<dyn PtrExpression_>>),
+    Record(Vec<Box<dyn ValExpression>>, Vec<Box<dyn PtrExpression_>>),
     Ref(String),
 }
 
 #[derive(Debug)]
 enum TailStatement {
-    Halt(Box<dyn IntExpression_>),
+    Halt(Box<dyn ValExpression>),
     //Call(Expression, Vec<Expression>),
     StaticCall(
         String,
-        Vec<Box<dyn IntExpression_>>,
+        Vec<Box<dyn ValExpression>>,
         Vec<Box<dyn PtrExpression_>>,
     ),
 }
@@ -202,7 +217,6 @@ impl Compilable for IntExpression {
 impl Compilable for PtrExpression {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         match self {
-            PtrExpression::Null => vec![Op::Const(0), Op::ValToPtr],
             PtrExpression::Record(ints, ptrs) => compiler.compile_record(ints, ptrs, env),
             PtrExpression::Ref(ident) => match env.lookup(ident) {
                 None => panic!("unbound identifier {ident}"),
@@ -242,7 +256,7 @@ impl Compiler {
 
     fn compile_record(
         &mut self,
-        ints: &[Box<dyn IntExpression_>],
+        ints: &[Box<dyn ValExpression>],
         ptrs: &[Box<dyn PtrExpression_>],
         env: &Env,
     ) -> Vec<Op<String>> {
@@ -330,7 +344,7 @@ mod tests {
     #[test]
     fn compile_ptr_conditional() {
         let code = Compiler::new().compile(
-            PtrIf::new(Const(1), PtrExpression::Null, PtrExpression::Null),
+            PtrIf::new(Const(1), PtrNull, PtrNull),
             &Env::Empty,
         );
         match code.as_slice() {
@@ -398,7 +412,7 @@ mod tests {
     #[test]
     fn compile_null_ptr() {
         assert_eq!(
-            Compiler::new().compile(PtrExpression::Null, &Env::Empty),
+            Compiler::new().compile(PtrNull, &Env::Empty),
             vec![Op::Const(0), Op::ValToPtr]
         );
     }
@@ -408,8 +422,8 @@ mod tests {
         assert_eq!(
             Compiler::new().compile(
                 PtrExpression::Record(
-                    vec![Box::new(Const(1)), Box::new(Const(2))],
-                    vec![Box::new(PtrExpression::Null)],
+                    boxvec![Const(1), Const(2)],
+                    boxvec![PtrNull],
                 ),
                 &Env::Empty
             ),
