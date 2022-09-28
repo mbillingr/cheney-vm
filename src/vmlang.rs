@@ -38,14 +38,15 @@ trait PtrExpression_: Ast {}
 trait TailStatement_: Ast {}
 
 mark!(
-    Ast: Const, IntRef,
+    Ast: Const,
+    IntRef,
+    Lambda,
     IntIf,
-    IntExpression,
     PtrExpression,
     TailStatement,
     PtrNull
 );
-mark!(ValExpression: IntExpression, Const, IntRef, IntIf);
+mark!(ValExpression: Const, IntRef, Lambda, IntIf);
 mark!(PtrExpression_: PtrExpression, PtrNull);
 mark!(TailStatement_: TailStatement);
 
@@ -68,6 +69,66 @@ impl Compilable for IntRef {
             Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
             Some(_) => panic!("{} is not a value variable", self.0),
         }
+    }
+}
+
+#[derive(Debug)]
+struct Lambda {
+    val_params: Vec<String>,
+    ptr_params: Vec<String>,
+    body: Box<dyn TailStatement_>,
+}
+
+impl Lambda {
+    pub fn new(
+        val_params: Vec<String>,
+        ptr_params: Vec<String>,
+        body: impl TailStatement_ + 'static,
+    ) -> Self {
+        Lambda {
+            val_params,
+            ptr_params,
+            body: Box::new(body),
+        }
+    }
+}
+
+impl Compilable for Lambda {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let lam_label = compiler.unique_label("lambda");
+        let end_label = compiler.unique_label("end-lambda");
+        let mut code = vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())];
+
+        let mut local_env = env.clone();
+        let mut idx = (self.val_params.len() + self.ptr_params.len()) as Int;
+
+        if idx > 0 {
+            code.push(Op::Alloc(RecordSignature::new(
+                self.val_params.len() as Half,
+                self.ptr_params.len() as Half,
+            )));
+        }
+
+        for pa in self.ptr_params.iter().rev() {
+            idx -= 1;
+            local_env = local_env.assoc(pa, Binding::LocalPtr(idx));
+            code.extend([Op::PtrPeek(1), Op::PtrPopInto(idx)]);
+        }
+
+        for pa in self.val_params.iter().rev() {
+            idx -= 1;
+            local_env = local_env.assoc(pa, Binding::LocalVal(idx));
+            code.extend([Op::PopInto(idx)]);
+        }
+
+        join!(
+            code,
+            self.body.compile(&local_env, compiler),
+            [
+                Op::Label(end_label.clone()),
+                Op::PushAddr(lam_label.clone())
+            ]
+        )
     }
 }
 
@@ -157,11 +218,6 @@ define_if!(PtrIf, PtrExpression_, tail = false);
 define_if!(TailIf, TailStatement_, tail = true);
 
 #[derive(Debug)]
-enum IntExpression {
-    Lambda(Vec<String>, Vec<String>, Box<dyn TailStatement_>),
-}
-
-#[derive(Debug)]
 enum PtrExpression {
     Record(Vec<Box<dyn ValExpression>>, Vec<Box<dyn PtrExpression_>>),
     Ref(String),
@@ -176,49 +232,6 @@ enum TailStatement {
         Vec<Box<dyn ValExpression>>,
         Vec<Box<dyn PtrExpression_>>,
     ),
-}
-
-impl Compilable for IntExpression {
-    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        match self {
-            IntExpression::Lambda(val_args, ptr_args, body) => {
-                let lam_label = compiler.unique_label("lambda");
-                let end_label = compiler.unique_label("end-lambda");
-                let mut code = vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())];
-
-                let mut local_env = env.clone();
-                let mut idx = (val_args.len() + ptr_args.len()) as Int;
-
-                if idx > 0 {
-                    code.push(Op::Alloc(RecordSignature::new(
-                        val_args.len() as Half,
-                        ptr_args.len() as Half,
-                    )));
-                }
-
-                for pa in ptr_args.iter().rev() {
-                    idx -= 1;
-                    local_env = local_env.assoc(pa, Binding::LocalPtr(idx));
-                    code.extend([Op::PtrPeek(1), Op::PtrPopInto(idx)]);
-                }
-
-                for pa in val_args.iter().rev() {
-                    idx -= 1;
-                    local_env = local_env.assoc(pa, Binding::LocalVal(idx));
-                    code.extend([Op::PopInto(idx)]);
-                }
-
-                join!(
-                    code,
-                    body.compile(&local_env, compiler),
-                    [
-                        Op::Label(end_label.clone()),
-                        Op::PushAddr(lam_label.clone())
-                    ]
-                )
-            }
-        }
-    }
 }
 
 impl Compilable for PtrExpression {
@@ -350,10 +363,7 @@ mod tests {
 
     #[test]
     fn compile_ptr_conditional() {
-        let code = Compiler::new().compile(
-            PtrIf::new(Const(1), PtrNull, PtrNull),
-            &Env::Empty,
-        );
+        let code = Compiler::new().compile(PtrIf::new(Const(1), PtrNull, PtrNull), &Env::Empty);
         match code.as_slice() {
             [Op::Const(1), Op::GoIfZero(else_target), Op::Const(0), Op::ValToPtr, Op::Goto(end_target), Op::Label(else_label), Op::Const(0), Op::ValToPtr, Op::Label(end_label)]
                 if else_target == else_label
@@ -428,10 +438,7 @@ mod tests {
     fn compile_record_initialization() {
         assert_eq!(
             Compiler::new().compile(
-                PtrExpression::Record(
-                    boxvec![Const(1), Const(2)],
-                    boxvec![PtrNull],
-                ),
+                PtrExpression::Record(boxvec![Const(1), Const(2)], boxvec![PtrNull],),
                 &Env::Empty
             ),
             vec![
@@ -450,11 +457,7 @@ mod tests {
     #[test]
     fn compile_nullary_lambda() {
         let code = Compiler::new().compile(
-            IntExpression::Lambda(
-                vec![],
-                vec![],
-                Box::new(TailStatement::Halt(Box::new(Const(42)))),
-            ),
+            Lambda::new(vec![], vec![], TailStatement::Halt(Box::new(Const(42)))),
             &Env::Empty,
         );
 
@@ -468,10 +471,10 @@ mod tests {
     #[test]
     fn compile_nary_lambda() {
         let code = Compiler::new().compile(
-            IntExpression::Lambda(
+            Lambda::new(
                 vec!["a".to_string(), "b".to_string()],
                 vec!["x".to_string(), "y".to_string()],
-                Box::new(TailStatement::Halt(Box::new(Const(42)))),
+                TailStatement::Halt(Box::new(Const(42))),
             ),
             &Env::Empty,
         );
