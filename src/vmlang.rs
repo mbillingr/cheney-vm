@@ -49,11 +49,14 @@ mark!(
     PtrNull,
     PtrRef,
     Record,
-    Halt
+    Halt,
+    CallStatic,
+    CallDynamic,
+    CallClosure
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
 mark!(PtrExpression: PtrNull, PtrRef, Record);
-mark!(TailStatement_: Halt);
+mark!(TailStatement_: Halt, CallStatic, CallDynamic, CallClosure);
 
 #[derive(Debug)]
 struct Const(Int);
@@ -226,10 +229,84 @@ impl Compilable for Halt {
 }
 
 #[derive(Debug)]
-struct StaticCall {
+struct CallStatic {
     function: String,
     var_args: Vec<Box<dyn ValExpression>>,
     ptr_args: Vec<Box<dyn PtrExpression>>,
+}
+
+impl CallStatic {
+    pub fn new(
+        f: impl ToString,
+        var_args: Vec<Box<dyn ValExpression>>,
+        ptr_args: Vec<Box<dyn PtrExpression>>,
+    ) -> Self {
+        CallStatic {
+            function: f.to_string(),
+            var_args,
+            ptr_args,
+        }
+    }
+}
+
+impl Compilable for CallStatic {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+struct CallDynamic {
+    function: Box<dyn ValExpression>,
+    var_args: Vec<Box<dyn ValExpression>>,
+    ptr_args: Vec<Box<dyn PtrExpression>>,
+}
+
+impl CallDynamic {
+    pub fn new(
+        f: impl ValExpression + 'static,
+        var_args: Vec<Box<dyn ValExpression>>,
+        ptr_args: Vec<Box<dyn PtrExpression>>,
+    ) -> Self {
+        CallDynamic {
+            function: Box::new(f),
+            var_args,
+            ptr_args,
+        }
+    }
+}
+
+impl Compilable for CallDynamic {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+struct CallClosure {
+    function: Box<dyn PtrExpression>,
+    var_args: Vec<Box<dyn ValExpression>>,
+    ptr_args: Vec<Box<dyn PtrExpression>>,
+}
+
+impl CallClosure {
+    pub fn new(
+        f: impl PtrExpression + 'static,
+        var_args: Vec<Box<dyn ValExpression>>,
+        ptr_args: Vec<Box<dyn PtrExpression>>,
+    ) -> Self {
+        CallClosure {
+            function: Box::new(f),
+            var_args,
+            ptr_args,
+        }
+    }
+}
+
+impl Compilable for CallClosure {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        todo!()
+    }
 }
 
 macro_rules! define_if {
