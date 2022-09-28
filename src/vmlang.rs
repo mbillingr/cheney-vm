@@ -91,6 +91,82 @@ impl Compilable for IntIf {
 }
 
 #[derive(Debug)]
+struct PtrIf {
+    condition: Box<dyn IntExpression_>,
+    consequence: Box<dyn PtrExpression_>,
+    alternative: Box<dyn PtrExpression_>,
+}
+
+impl PtrIf {
+    fn new(
+        condition: impl IntExpression_ + 'static,
+        consequence: impl PtrExpression_ + 'static,
+        alternative: impl PtrExpression_ + 'static,
+    ) -> Self {
+        PtrIf {
+            condition: Box::new(condition),
+            consequence: Box::new(consequence),
+            alternative: Box::new(alternative),
+        }
+    }
+}
+
+impl Compilable for PtrIf {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let else_label = compiler.unique_label("elif");
+        let end_label = compiler.unique_label("endif");
+        let cond = self.condition.compile(env, compiler);
+        let cons = self.consequence.compile(env, compiler);
+        let alt = self.alternative.compile(env, compiler);
+        join!(
+            cond,
+            [Op::GoIfZero(else_label.clone())],
+            cons,
+            [Op::Goto(end_label.clone()), Op::Label(else_label)],
+            alt,
+            [Op::Label(end_label)]
+        )
+    }
+}
+
+#[derive(Debug)]
+struct TailIf {
+    condition: Box<dyn IntExpression_>,
+    consequence: Box<dyn TailStatement_>,
+    alternative: Box<dyn TailStatement_>,
+}
+
+impl TailIf {
+    fn new(
+        condition: impl IntExpression_ + 'static,
+        consequence: impl TailStatement_ + 'static,
+        alternative: impl TailStatement_ + 'static,
+    ) -> Self {
+        TailIf {
+            condition: Box::new(condition),
+            consequence: Box::new(consequence),
+            alternative: Box::new(alternative),
+        }
+    }
+}
+
+impl Compilable for TailIf {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let else_label = compiler.unique_label("elif");
+        let cond = self.condition.compile(env, compiler);
+        let cons = self.consequence.compile(env, compiler);
+        let alt = self.alternative.compile(env, compiler);
+        join!(
+            cond,
+            [Op::GoIfZero(else_label.clone())],
+            cons,
+            [Op::Label(else_label)],
+            alt
+        )
+    }
+}
+
+#[derive(Debug)]
 enum IntExpression {
     Ref(String),
     Lambda(Vec<String>, Vec<String>, Box<dyn TailStatement_>),
@@ -101,11 +177,6 @@ enum PtrExpression {
     Null,
     Record(Vec<Box<dyn IntExpression_>>, Vec<Box<dyn PtrExpression_>>),
     Ref(String),
-    If(
-        Box<dyn IntExpression_>,
-        Box<dyn PtrExpression_>,
-        Box<dyn PtrExpression_>,
-    ),
 }
 
 #[derive(Debug)]
@@ -116,11 +187,6 @@ enum TailStatement {
         String,
         Vec<Box<dyn IntExpression_>>,
         Vec<Box<dyn PtrExpression_>>,
-    ),
-    If(
-        Box<dyn IntExpression_>,
-        Box<dyn TailStatement_>,
-        Box<dyn TailStatement_>,
     ),
 }
 
@@ -296,6 +362,34 @@ mod tests {
                 if else_target == else_label
                     && end_target == end_label
                     && else_label != end_label => {}
+            _ => panic!("{code:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_ptr_conditional() {
+        let code = Compiler::new().compile(
+            PtrIf::new(Const(1), PtrExpression::Null, PtrExpression::Null),
+            &Env::Empty,
+        );
+        match code.as_slice() {
+            [Op::Const(1), Op::GoIfZero(else_target), Op::Const(0), Op::ValToPtr, Op::Goto(end_target), Op::Label(else_label), Op::Const(0), Op::ValToPtr, Op::Label(end_label)]
+            if else_target == else_label
+                && end_target == end_label
+                && else_label != end_label => {}
+            _ => panic!("{code:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_tail_conditional() {
+        let code = Compiler::new().compile(
+            TailIf::new(Const(1), TailStatement::Halt(Box::new(Const(2))), TailStatement::Halt(Box::new(Const(3)))),
+            &Env::Empty,
+        );
+        match code.as_slice() {
+            [Op::Const(1), Op::GoIfZero(else_target), Op::Const(2), Op::Halt, Op::Label(else_label), Op::Const(3), Op::Halt]
+            if else_target == else_label => {}
             _ => panic!("{code:?}"),
         }
     }
