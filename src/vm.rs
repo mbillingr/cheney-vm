@@ -29,6 +29,10 @@ pub enum Op<T> {
     PtrPushLocal(Int),
     PtrPopLocal(Int),
 
+    SetClosure,
+    PushClosed(Int),
+    PtrPushClosed(Int),
+
     PushFrom(Int),
     PopInto(Int),
     PtrPushFrom(Int),
@@ -56,6 +60,9 @@ impl<T> Op<T> {
     pub fn goto_zero(label: impl Into<T>) -> Self {
         Self::GoIfZero(label.into())
     }
+    pub fn push_addr(label: impl Into<T>) -> Self {
+        Self::PushAddr(label.into())
+    }
 
     pub fn is_label(&self) -> bool {
         match self {
@@ -77,6 +84,9 @@ impl<T> Op<T> {
             Op::SetLocals => Op::SetLocals,
             Op::PushLocal(idx) => Op::PushLocal(*idx),
             Op::PopLocal(idx) => Op::PopLocal(*idx),
+            Op::SetClosure => Op::SetClosure,
+            Op::PushClosed(idx) => Op::PushClosed(*idx),
+            Op::PtrPushClosed(idx) => Op::PtrPushClosed(*idx),
             Op::PtrPushLocal(idx) => Op::PtrPushLocal(*idx),
             Op::PtrPopLocal(idx) => Op::PtrPopLocal(*idx),
             Op::PushFrom(idx) => Op::PushFrom(*idx),
@@ -173,6 +183,7 @@ pub struct Vm<AC, GC> {
     val_stack: Vec<Int>,
     ptr_stack: Vec<Ptr>,
     lcl: Ptr,
+    cls: Ptr,
 
     builtins: Vec<BuiltinFunction<AC, GC>>,
 }
@@ -193,6 +204,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             val_stack: vec![],
             ptr_stack: vec![],
             lcl: 0,
+            cls: 0,
             builtins: vec![],
         }
     }
@@ -247,16 +259,19 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 }
                 Op::Const(x) => self.val_stack.push(x),
                 Op::SetLocals => self.lcl = self.ptr_stack.pop().unwrap(),
-                Op::PushLocal(idx) => self.val_stack.push(self.get_local(idx)),
+                Op::PushLocal(idx) => self.val_stack.push(self.get_ptr_offset(self.lcl, idx)),
                 Op::PopLocal(idx) => {
                     let val = self.val_stack.pop().unwrap();
                     self.set_local(idx, val);
                 }
-                Op::PtrPushLocal(idx) => self.ptr_stack.push(self.get_local(idx)),
+                Op::PtrPushLocal(idx) => self.ptr_stack.push(self.get_ptr_offset(self.lcl, idx)),
                 Op::PtrPopLocal(idx) => {
                     let val = self.ptr_stack.pop().unwrap();
                     self.set_local(idx, val);
                 }
+                Op::SetClosure => self.cls = self.ptr_stack.pop().unwrap(),
+                Op::PushClosed(idx) => self.val_stack.push(self.get_ptr_offset(self.cls, idx)),
+                Op::PtrPushClosed(idx) => self.ptr_stack.push(self.get_ptr_offset(self.cls, idx)),
                 Op::PushFrom(idx) => self.val_stack.push(self.get_field(idx)),
                 Op::PopInto(idx) => {
                     let val = self.val_stack.pop().unwrap();
@@ -296,8 +311,8 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
         self.heap[self.lcl as usize + offset as usize] = val
     }
 
-    fn get_local(&self, offset: Int) -> Int {
-        self.heap[self.lcl as usize + offset as usize]
+    fn get_ptr_offset(&self, ptr: Int, offset: Int) -> Int {
+        self.heap[ptr as usize + offset as usize]
     }
 
     fn set_field(&mut self, offset: Int, val: Int) {
@@ -330,7 +345,9 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
 
     fn collect_garbage(&mut self) {
         self.ptr_stack.push(self.lcl);
+        self.ptr_stack.push(self.cls);
         self.gc.collect(&mut self.ptr_stack, &mut self.heap);
+        self.cls = self.ptr_stack.pop().unwrap();
         self.lcl = self.ptr_stack.pop().unwrap();
     }
 

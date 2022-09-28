@@ -49,13 +49,14 @@ mark!(
     PtrNull,
     PtrRef,
     Record,
+    Closure,
     Halt,
     CallStatic,
     CallDynamic,
     CallClosure
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
-mark!(PtrExpression: PtrNull, PtrRef, Record);
+mark!(PtrExpression: PtrNull, PtrRef, Record, Closure);
 mark!(TailStatement_: Halt, CallStatic, CallDynamic, CallClosure);
 
 #[derive(Debug)]
@@ -77,12 +78,8 @@ impl ValRef {
 }
 
 impl Compilable for ValRef {
-    fn compile(&self, env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
-        match env.lookup(&self.0) {
-            None => panic!("unbound identifier {}", self.0),
-            Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
-            Some(_) => panic!("{} is not a value variable", self.0),
-        }
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        compiler.compile_valref(&self.0, env)
     }
 }
 
@@ -166,12 +163,8 @@ impl PtrRef {
 }
 
 impl Compilable for PtrRef {
-    fn compile(&self, env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
-        match env.lookup(&self.0) {
-            None => panic!("unbound identifier {}", self.0),
-            Some(Binding::LocalPtr(idx)) => vec![Op::PtrPushLocal(*idx)],
-            Some(_) => panic!("{} is not a pointer variable", self.0),
-        }
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        compiler.compile_ptrref(&self.0, env)
     }
 }
 
@@ -214,13 +207,70 @@ impl Compilable for Record {
     }
 }
 
-/*#[derive(Debug)]
+#[derive(Debug)]
 struct Closure {
     closed_vars: Vec<String>,
-    val_params: Vec<String>,
-    ptr_params: Vec<String>,
-    body: Box<dyn TailStatement_>,
-}*/
+    lambda: Lambda,
+}
+
+impl Closure {
+    pub fn new(closed_vars: Vec<String>, lambda: Lambda) -> Self {
+        Closure {
+            closed_vars,
+            lambda,
+        }
+    }
+}
+
+impl Compilable for Closure {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let mut n_val = 0;
+        let mut n_ptr = 0;
+        for cv in &self.closed_vars {
+            match env.lookup(cv) {
+                None => panic!("unbound variable {cv}"),
+                Some(b) if b.is_value() => n_val += 1,
+                Some(b) if !b.is_value() => n_ptr += 1,
+                _ => unreachable!(),
+            }
+        }
+
+        let mut code = vec![];
+        code.extend([
+            Op::Alloc(RecordSignature::new(1, 1)),
+            Op::Alloc(RecordSignature::new(n_val, n_ptr)),
+        ]);
+
+        let mut closed_env = Env::Empty;
+        let mut idx = 0;
+        for cv in self
+            .closed_vars
+            .iter()
+            .filter(|cv| env.lookup(cv).unwrap().is_value())
+        {
+            code.extend(compiler.compile_valref(cv, env));
+            code.extend([Op::PopInto(idx)]);
+            closed_env = closed_env.assoc(cv, Binding::ClosedVal(idx));
+            idx += 1;
+        }
+        for cv in self
+            .closed_vars
+            .iter()
+            .filter(|cv| !env.lookup(cv).unwrap().is_value())
+        {
+            code.extend(compiler.compile_ptrref(cv, env));
+            code.extend([Op::PtrPopInto(idx)]);
+            closed_env = closed_env.assoc(cv, Binding::ClosedPtr(idx));
+            idx += 1;
+        }
+        code.extend([Op::PtrPopInto(1)]);
+
+        code.extend(self.lambda.compile(&closed_env, compiler));
+        code.extend([Op::PopInto(0)]);
+
+        code
+    }
+}
 
 #[derive(Debug)]
 struct Halt(Box<dyn ValExpression>);
@@ -322,7 +372,7 @@ impl Compilable for CallClosure {
         let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
         code.extend(self.closure.compile(env, compiler));
         code.extend(compiler.gen_destructure(1, 1));
-        code.extend([Op::Jump]);
+        code.extend([Op::SetClosure, Op::Jump]);
         code
     }
 }
@@ -422,6 +472,24 @@ impl Compiler {
         format!("{s}-{n}")
     }
 
+    fn compile_valref(&self, name: &str, env: &Env) -> Vec<Op<String>> {
+        match env.lookup(name) {
+            None => panic!("unbound identifier {name}"),
+            Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
+            Some(Binding::ClosedVal(idx)) => vec![Op::PushClosed(*idx)],
+            Some(_) => panic!("{} is not a value variable", name),
+        }
+    }
+
+    fn compile_ptrref(&self, name: &str, env: &Env) -> Vec<Op<String>> {
+        match env.lookup(name) {
+            None => panic!("unbound identifier {name}"),
+            Some(Binding::LocalPtr(idx)) => vec![Op::PtrPushLocal(*idx)],
+            Some(Binding::ClosedPtr(idx)) => vec![Op::PtrPushClosed(*idx)],
+            Some(_) => panic!("{} is not a pointer variable", name),
+        }
+    }
+
     fn compile_args(
         &mut self,
         val_args: &[Box<dyn ValExpression>],
@@ -460,6 +528,17 @@ impl Compiler {
 enum Binding {
     LocalVal(Int),
     LocalPtr(Int),
+    ClosedVal(Int),
+    ClosedPtr(Int),
+}
+
+impl Binding {
+    fn is_value(&self) -> bool {
+        match self {
+            Binding::LocalVal(_) | Binding::ClosedVal(_) => true,
+            Binding::LocalPtr(_) | Binding::ClosedPtr(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -705,6 +784,7 @@ mod tests {
                 Op::PushFrom(0),    // callable is in the first field
                 Op::PtrPushFrom(1), // free-var record is in the second field
                 Op::PtrDrop(1),     // get rid of of the closure record
+                Op::SetClosure,
                 Op::Jump,
             ]
         );
@@ -720,6 +800,43 @@ mod tests {
                 Halt::new(Lambda::new(vec![], vec![], Halt::new(ValRef::new("a")))),
             ),
             &Env::Empty,
+        );
+    }
+
+    #[test]
+    fn lambda_can_access_closed_vars() {
+        let code = Compiler::new().compile(
+            Closure::new(
+                vec!["p".to_string(), "a".to_string()],
+                Lambda::new(vec![], vec![], Halt::new(ValRef::new("a"))),
+            ),
+            &Env::Empty
+                .assoc("a", Binding::LocalVal(7))
+                .assoc("p", Binding::LocalPtr(11)),
+        );
+
+        for op in &code {
+            println!("{op:?}");
+        }
+
+        assert_eq!(
+            code,
+            [
+                Op::Alloc(RecordSignature::new(1, 1)), // closure record
+                Op::Alloc(RecordSignature::new(1, 1)), // env record
+                Op::PushLocal(7),
+                Op::PopInto(0),
+                Op::PtrPushLocal(11),
+                Op::PtrPopInto(1),
+                Op::PtrPopInto(1), // put env into closure
+                Op::goto("end-lambda-1"),
+                Op::label("lambda-0"),
+                Op::PushClosed(0),
+                Op::Halt,
+                Op::label("end-lambda-1"),
+                Op::push_addr("lambda-0"),
+                Op::PopInto(0), // store function pointer in closure
+            ]
         );
     }
 }
