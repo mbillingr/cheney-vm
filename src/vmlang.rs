@@ -113,7 +113,7 @@ impl Compilable for Lambda {
         let end_label = compiler.unique_label("end-lambda");
         let mut code = vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())];
 
-        let mut local_env = env.clone();
+        let mut local_env = env.without_locals();
         let mut idx = (self.val_params.len() + self.ptr_params.len()) as Int;
 
         if idx > 0 {
@@ -121,18 +121,19 @@ impl Compilable for Lambda {
                 self.val_params.len() as Half,
                 self.ptr_params.len() as Half,
             )));
+            code.push(Op::SetLocals);
         }
 
         for pa in self.ptr_params.iter().rev() {
             idx -= 1;
             local_env = local_env.assoc(pa, Binding::LocalPtr(idx));
-            code.extend([Op::PtrPeek(1), Op::PtrPopInto(idx)]);
+            code.extend([Op::PtrPopLocal(idx)]);
         }
 
         for pa in self.val_params.iter().rev() {
             idx -= 1;
             local_env = local_env.assoc(pa, Binding::LocalVal(idx));
-            code.extend([Op::PopInto(idx)]);
+            code.extend([Op::PopLocal(idx)]);
         }
 
         join!(
@@ -212,6 +213,14 @@ impl Compilable for Record {
         code
     }
 }
+
+/*#[derive(Debug)]
+struct Closure {
+    closed_vars: Vec<String>,
+    val_params: Vec<String>,
+    ptr_params: Vec<String>,
+    body: Box<dyn TailStatement_>,
+}*/
 
 #[derive(Debug)]
 struct Halt(Box<dyn ValExpression>);
@@ -447,7 +456,7 @@ impl Compiler {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 enum Binding {
     LocalVal(Int),
     LocalPtr(Int),
@@ -474,6 +483,16 @@ impl Env {
                     e.2.lookup(name)
                 }
             }
+        }
+    }
+
+    fn without_locals(&self) -> Self {
+        match self {
+            Env::Empty => Env::Empty,
+            Env::Entry(entry) => match &**entry {
+                (_, Binding::LocalPtr(_) | Binding::LocalVal(_), next) => next.without_locals(),
+                (name, binding, next) => next.without_locals().assoc(name, *binding),
+            },
         }
     }
 }
@@ -619,7 +638,7 @@ mod tests {
         );
 
         match &code[..] {
-            [Op::Goto(goto_end), Op::Label(label_def), Op::Alloc(rs), Op::PtrPeek(1), Op::PtrPopInto(3), Op::PtrPeek(1), Op::PtrPopInto(2), Op::PopInto(1), Op::PopInto(0), Op::Const(42), Op::Halt, Op::Label(label_end), Op::PushAddr(get_def)]
+            [Op::Goto(goto_end), Op::Label(label_def), Op::Alloc(rs), Op::SetLocals, Op::PtrPopLocal(3), Op::PtrPopLocal(2), Op::PopLocal(1), Op::PopLocal(0), Op::Const(42), Op::Halt, Op::Label(label_end), Op::PushAddr(get_def)]
                 if goto_end == label_end
                     && get_def == label_def
                     && rs.n_primitive() == 2
@@ -688,6 +707,19 @@ mod tests {
                 Op::PtrDrop(1),     // get rid of of the closure record
                 Op::Jump,
             ]
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn lambda_cant_access_outer_vars() {
+        let code = Compiler::new().compile(
+            Lambda::new(
+                vec!["a".to_string()],
+                vec![],
+                Halt::new(Lambda::new(vec![], vec![], Halt::new(ValRef::new("a")))),
+            ),
+            &Env::Empty,
         );
     }
 }
