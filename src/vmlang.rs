@@ -419,13 +419,31 @@ impl Compiler {
         ptr_args: &[Box<dyn PtrExpression>],
         env: &Env,
     ) -> Vec<Op<String>> {
-        todo!()
+        let mut code = vec![];
+        for va in val_args {
+            code.extend(va.compile(env, self));
+        }
+        for pa in ptr_args {
+            code.extend(pa.compile(env, self));
+        }
+        code
     }
 
     /// generate code to effectively pop the top record from the ptr_stack, push its value fields on
     /// val_stack and its pointer fields on ptr_stack.
     fn gen_destructure(&mut self, n_vals: Half, n_ptrs: Half) -> Vec<Op<String>> {
-        todo!()
+        let mut code = vec![];
+        let mut idx = 0;
+        for _ in 0..n_vals {
+            code.push(Op::PushFrom(idx));
+            idx += 1;
+        }
+        for _ in 0..n_vals {
+            code.push(Op::PtrPushFrom(idx));
+            idx += 1;
+        }
+        code.push(Op::PtrDrop(n_ptrs as Int));
+        code
     }
 }
 
