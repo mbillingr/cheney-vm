@@ -51,120 +51,81 @@ impl Compilable for Const {
     }
 }
 
-#[derive(Debug)]
-struct IntIf {
-    condition: Box<dyn IntExpression_>,
-    consequence: Box<dyn IntExpression_>,
-    alternative: Box<dyn IntExpression_>,
-}
+macro_rules! define_if {
+    ($tname:ident, $t:path, tail=false) => {
+        define_if!(@struct $tname, $t);
+        define_if!(@compile $tname, $t, tail=false);
+    };
+    ($tname:ident, $t:path, tail=true) => {
+        define_if!(@struct $tname, $t);
+        define_if!(@compile $tname, $t, tail=true);
+    };
 
-impl IntIf {
-    fn new(
-        condition: impl IntExpression_ + 'static,
-        consequence: impl IntExpression_ + 'static,
-        alternative: impl IntExpression_ + 'static,
-    ) -> Self {
-        IntIf {
-            condition: Box::new(condition),
-            consequence: Box::new(consequence),
-            alternative: Box::new(alternative),
+    (@struct $tname:ident, $t:path) => {
+        #[derive(Debug)]
+        struct $tname {
+            condition: Box<dyn IntExpression_>,
+            consequence: Box<dyn $t>,
+            alternative: Box<dyn $t>,
+        }
+
+        impl $tname {
+            fn new(
+                condition: impl IntExpression_ + 'static,
+                consequence: impl $t + 'static,
+                alternative: impl $t + 'static,
+            ) -> Self {
+                $tname {
+                    condition: Box::new(condition),
+                    consequence: Box::new(consequence),
+                    alternative: Box::new(alternative),
+                }
+            }
+        }
+    };
+
+    (@compile $tname:ident, $t:path, tail=false) => {
+        impl Compilable for $tname {
+            fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+                let else_label = compiler.unique_label("elif");
+                let end_label = compiler.unique_label("endif");
+                let cond = self.condition.compile(env, compiler);
+                let cons = self.consequence.compile(env, compiler);
+                let alt = self.alternative.compile(env, compiler);
+                join!(
+                    cond,
+                    [Op::GoIfZero(else_label.clone())],
+                    cons,
+                    [Op::Goto(end_label.clone()), Op::Label(else_label)],
+                    alt,
+                    [Op::Label(end_label)]
+                )
+            }
+        }
+    };
+
+    (@compile $tname:ident, $t:path, tail=true) => {
+        impl Compilable for $tname {
+            fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+                let else_label = compiler.unique_label("elif");
+                let cond = self.condition.compile(env, compiler);
+                let cons = self.consequence.compile(env, compiler);
+                let alt = self.alternative.compile(env, compiler);
+                join!(
+                    cond,
+                    [Op::GoIfZero(else_label.clone())],
+                    cons,
+                    [Op::Label(else_label)],
+                    alt
+                )
+            }
         }
     }
 }
 
-impl Compilable for IntIf {
-    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        let else_label = compiler.unique_label("elif");
-        let end_label = compiler.unique_label("endif");
-        let cond = self.condition.compile(env, compiler);
-        let cons = self.consequence.compile(env, compiler);
-        let alt = self.alternative.compile(env, compiler);
-        join!(
-            cond,
-            [Op::GoIfZero(else_label.clone())],
-            cons,
-            [Op::Goto(end_label.clone()), Op::Label(else_label)],
-            alt,
-            [Op::Label(end_label)]
-        )
-    }
-}
-
-#[derive(Debug)]
-struct PtrIf {
-    condition: Box<dyn IntExpression_>,
-    consequence: Box<dyn PtrExpression_>,
-    alternative: Box<dyn PtrExpression_>,
-}
-
-impl PtrIf {
-    fn new(
-        condition: impl IntExpression_ + 'static,
-        consequence: impl PtrExpression_ + 'static,
-        alternative: impl PtrExpression_ + 'static,
-    ) -> Self {
-        PtrIf {
-            condition: Box::new(condition),
-            consequence: Box::new(consequence),
-            alternative: Box::new(alternative),
-        }
-    }
-}
-
-impl Compilable for PtrIf {
-    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        let else_label = compiler.unique_label("elif");
-        let end_label = compiler.unique_label("endif");
-        let cond = self.condition.compile(env, compiler);
-        let cons = self.consequence.compile(env, compiler);
-        let alt = self.alternative.compile(env, compiler);
-        join!(
-            cond,
-            [Op::GoIfZero(else_label.clone())],
-            cons,
-            [Op::Goto(end_label.clone()), Op::Label(else_label)],
-            alt,
-            [Op::Label(end_label)]
-        )
-    }
-}
-
-#[derive(Debug)]
-struct TailIf {
-    condition: Box<dyn IntExpression_>,
-    consequence: Box<dyn TailStatement_>,
-    alternative: Box<dyn TailStatement_>,
-}
-
-impl TailIf {
-    fn new(
-        condition: impl IntExpression_ + 'static,
-        consequence: impl TailStatement_ + 'static,
-        alternative: impl TailStatement_ + 'static,
-    ) -> Self {
-        TailIf {
-            condition: Box::new(condition),
-            consequence: Box::new(consequence),
-            alternative: Box::new(alternative),
-        }
-    }
-}
-
-impl Compilable for TailIf {
-    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        let else_label = compiler.unique_label("elif");
-        let cond = self.condition.compile(env, compiler);
-        let cons = self.consequence.compile(env, compiler);
-        let alt = self.alternative.compile(env, compiler);
-        join!(
-            cond,
-            [Op::GoIfZero(else_label.clone())],
-            cons,
-            [Op::Label(else_label)],
-            alt
-        )
-    }
-}
+define_if!(IntIf, IntExpression_, tail = false);
+define_if!(PtrIf, PtrExpression_, tail = false);
+define_if!(TailIf, TailStatement_, tail = true);
 
 #[derive(Debug)]
 enum IntExpression {
@@ -374,9 +335,9 @@ mod tests {
         );
         match code.as_slice() {
             [Op::Const(1), Op::GoIfZero(else_target), Op::Const(0), Op::ValToPtr, Op::Goto(end_target), Op::Label(else_label), Op::Const(0), Op::ValToPtr, Op::Label(end_label)]
-            if else_target == else_label
-                && end_target == end_label
-                && else_label != end_label => {}
+                if else_target == else_label
+                    && end_target == end_label
+                    && else_label != end_label => {}
             _ => panic!("{code:?}"),
         }
     }
@@ -384,12 +345,16 @@ mod tests {
     #[test]
     fn compile_tail_conditional() {
         let code = Compiler::new().compile(
-            TailIf::new(Const(1), TailStatement::Halt(Box::new(Const(2))), TailStatement::Halt(Box::new(Const(3)))),
+            TailIf::new(
+                Const(1),
+                TailStatement::Halt(Box::new(Const(2))),
+                TailStatement::Halt(Box::new(Const(3))),
+            ),
             &Env::Empty,
         );
         match code.as_slice() {
             [Op::Const(1), Op::GoIfZero(else_target), Op::Const(2), Op::Halt, Op::Label(else_label), Op::Const(3), Op::Halt]
-            if else_target == else_label => {}
+                if else_target == else_label => {}
             _ => panic!("{code:?}"),
         }
     }
