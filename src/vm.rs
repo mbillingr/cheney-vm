@@ -37,6 +37,7 @@ pub enum Op<T> {
     DupVal,
 
     PtrDup,
+    PtrDrop(Int),
     PtrNip(Int),
     PtrPeek(Int),
 
@@ -84,6 +85,7 @@ impl<T> Op<T> {
             Op::PtrPopInto(idx) => Op::PtrPopInto(*idx),
             Op::DupVal => Op::DupVal,
             Op::PtrDup => Op::PtrDup,
+            Op::PtrDrop(i) => Op::PtrDrop(*i),
             Op::PtrNip(i) => Op::PtrNip(*i),
             Op::PtrPeek(i) => Op::PtrPeek(*i),
             Op::PtrToVal => Op::PtrToVal,

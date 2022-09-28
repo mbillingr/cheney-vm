@@ -251,7 +251,9 @@ impl CallStatic {
 
 impl Compilable for CallStatic {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        todo!()
+        let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
+        code.extend([Op::PushAddr(self.function.clone()), Op::Jump]);
+        code
     }
 }
 
@@ -278,13 +280,16 @@ impl CallDynamic {
 
 impl Compilable for CallDynamic {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        todo!()
+        let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
+        code.extend(self.function.compile(env, compiler));
+        code.extend([Op::Jump]);
+        code
     }
 }
 
 #[derive(Debug)]
 struct CallClosure {
-    function: Box<dyn PtrExpression>,
+    closure: Box<dyn PtrExpression>,
     var_args: Vec<Box<dyn ValExpression>>,
     ptr_args: Vec<Box<dyn PtrExpression>>,
 }
@@ -296,7 +301,7 @@ impl CallClosure {
         ptr_args: Vec<Box<dyn PtrExpression>>,
     ) -> Self {
         CallClosure {
-            function: Box::new(f),
+            closure: Box::new(f),
             var_args,
             ptr_args,
         }
@@ -305,7 +310,11 @@ impl CallClosure {
 
 impl Compilable for CallClosure {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        todo!()
+        let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
+        code.extend(self.closure.compile(env, compiler));
+        code.extend(compiler.gen_destructure(1, 1));
+        code.extend([Op::Jump]);
+        code
     }
 }
 
@@ -403,6 +412,21 @@ impl Compiler {
         self.unique_counter += 1;
         format!("{s}-{n}")
     }
+
+    fn compile_args(
+        &mut self,
+        val_args: &[Box<dyn ValExpression>],
+        ptr_args: &[Box<dyn PtrExpression>],
+        env: &Env,
+    ) -> Vec<Op<String>> {
+        todo!()
+    }
+
+    /// generate code to effectively pop the top record from the ptr_stack, push its value fields on
+    /// val_stack and its pointer fields on ptr_stack.
+    fn gen_destructure(&mut self, n_vals: Half, n_ptrs: Half) -> Vec<Op<String>> {
+        todo!()
+    }
 }
 
 #[derive(Debug)]
@@ -440,6 +464,7 @@ impl Env {
 mod tests {
     use super::*;
     use crate::vm::RecordSignature;
+    use std::collections::HashMap;
 
     #[test]
     fn compile_int_constant() {
@@ -583,5 +608,68 @@ mod tests {
                     && rs.n_pointer() == 2 => {} // Ok
             _ => panic!("{:?}", code),
         }
+    }
+
+    #[test]
+    fn compile_static_call() {
+        assert_eq!(
+            Compiler::new().compile(
+                CallStatic::new("foo", boxvec![Const(1), Const(2)], boxvec!(PtrNull)),
+                &Env::Empty
+            ),
+            vec![
+                Op::Const(1),
+                Op::Const(2),
+                Op::Const(0),
+                Op::ValToPtr,
+                Op::PushAddr("foo".to_string()),
+                Op::Jump,
+            ]
+        );
+    }
+
+    #[test]
+    fn compile_dynamic_call() {
+        // Calling a number is invalid, but it compiles
+        assert_eq!(
+            Compiler::new().compile(
+                CallDynamic::new(Const(0), boxvec![Const(1), Const(2)], boxvec!(PtrNull)),
+                &Env::Empty
+            ),
+            vec![
+                Op::Const(1),
+                Op::Const(2),
+                Op::Const(0),
+                Op::ValToPtr,
+                Op::Const(0),
+                Op::Jump,
+            ]
+        );
+    }
+
+    #[test]
+    fn compile_closure_call() {
+        // Calling a Null pointer is invalid, but it compiles
+        assert_eq!(
+            Compiler::new().compile(
+                CallClosure::new(PtrNull, boxvec![Const(1), Const(2)], boxvec!(PtrNull)),
+                &Env::Empty
+            ),
+            vec![
+                // args
+                Op::Const(1),
+                Op::Const(2),
+                Op::Const(0),
+                Op::ValToPtr,
+                // fake ptr to a closure (record with two fields)
+                Op::Const(0),
+                Op::ValToPtr,
+                // prepare closure
+                Op::PushFrom(0),    // callable is in the first field
+                Op::PtrPushFrom(1), // free-var record is in the second field
+                Op::PtrDrop(1),     // get rid of of the closure record
+                Op::Jump,
+            ]
+        );
     }
 }
