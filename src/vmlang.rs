@@ -44,10 +44,11 @@ mark!(
     ValIf,
     PtrExpression,
     TailStatement,
-    PtrNull
+    PtrNull,
+    PtrRef
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
-mark!(PtrExpression_: PtrExpression, PtrNull);
+mark!(PtrExpression_: PtrExpression, PtrNull, PtrRef);
 mark!(TailStatement_: TailStatement);
 
 #[derive(Debug)]
@@ -61,6 +62,12 @@ impl Compilable for Const {
 
 #[derive(Debug)]
 struct ValRef(String);
+
+impl ValRef {
+    pub fn new(identifier: impl ToString) -> Self {
+        ValRef(identifier.to_string())
+    }
+}
 
 impl Compilable for ValRef {
     fn compile(&self, env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
@@ -138,6 +145,25 @@ struct PtrNull;
 impl Compilable for PtrNull {
     fn compile(&self, _env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
         vec![Op::Const(0), Op::ValToPtr]
+    }
+}
+
+#[derive(Debug)]
+struct PtrRef(String);
+
+impl PtrRef {
+    pub fn new(identifier: impl ToString) -> Self {
+        PtrRef(identifier.to_string())
+    }
+}
+
+impl Compilable for PtrRef {
+    fn compile(&self, env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
+        match env.lookup(&self.0) {
+            None => panic!("unbound identifier {}", self.0),
+            Some(Binding::LocalPtr(idx)) => vec![Op::PtrPushLocal(*idx)],
+            Some(_) => panic!("{} is not a pointer variable", self.0),
+        }
     }
 }
 
@@ -220,7 +246,6 @@ define_if!(TailIf, TailStatement_, tail = true);
 #[derive(Debug)]
 enum PtrExpression {
     Record(Vec<Box<dyn ValExpression>>, Vec<Box<dyn PtrExpression_>>),
-    Ref(String),
 }
 
 #[derive(Debug)]
@@ -238,11 +263,6 @@ impl Compilable for PtrExpression {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         match self {
             PtrExpression::Record(ints, ptrs) => compiler.compile_record(ints, ptrs, env),
-            PtrExpression::Ref(ident) => match env.lookup(ident) {
-                None => panic!("unbound identifier {ident}"),
-                Some(Binding::LocalPtr(idx)) => vec![Op::PtrPushLocal(*idx)],
-                Some(_) => panic!("{ident} is not a pointer variable"),
-            },
             _ => todo!("{self:?}"),
         }
     }
@@ -403,7 +423,7 @@ mod tests {
     fn compile_ptr_reference() {
         let env = Env::Empty.assoc("foo", Binding::LocalPtr(5));
         assert_eq!(
-            Compiler::new().compile(PtrExpression::Ref("foo".to_string()), &env),
+            Compiler::new().compile(PtrRef::new("foo"), &env),
             vec![Op::PtrPushLocal(5)]
         );
     }
@@ -414,7 +434,7 @@ mod tests {
         let env = Env::Empty
             .assoc("foo", Binding::LocalVal(0))
             .assoc("bar", Binding::LocalPtr(1));
-        Compiler::new().compile(PtrExpression::Ref("foo".to_string()), &env);
+        Compiler::new().compile(PtrRef::new("foo"), &env);
     }
 
     #[test]
