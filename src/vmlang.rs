@@ -34,7 +34,7 @@ macro_rules! join {
 
 trait Ast: Debug + Compilable {}
 trait ValExpression: Ast {}
-trait PtrExpression_: Ast {}
+trait PtrExpression: Ast {}
 trait TailStatement_: Ast {}
 
 mark!(
@@ -42,13 +42,13 @@ mark!(
     ValRef,
     Lambda,
     ValIf,
-    PtrExpression,
     TailStatement,
     PtrNull,
-    PtrRef
+    PtrRef,
+    Record
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
-mark!(PtrExpression_: PtrExpression, PtrNull, PtrRef);
+mark!(PtrExpression: PtrNull, PtrRef, Record);
 mark!(TailStatement_: TailStatement);
 
 #[derive(Debug)]
@@ -167,6 +167,45 @@ impl Compilable for PtrRef {
     }
 }
 
+#[derive(Debug)]
+struct Record {
+    val_fields: Vec<Box<dyn ValExpression>>,
+    ptr_fields: Vec<Box<dyn PtrExpression>>,
+}
+
+impl Record {
+    pub fn new(
+        val_fields: Vec<Box<dyn ValExpression>>,
+        ptr_fields: Vec<Box<dyn PtrExpression>>,
+    ) -> Self {
+        Record {
+            val_fields,
+            ptr_fields,
+        }
+    }
+}
+
+impl Compilable for Record {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let mut idx = 0;
+        let mut code = vec![Op::Alloc(RecordSignature::new(
+            self.val_fields.len() as Half,
+            self.ptr_fields.len() as Half,
+        ))];
+        for ix in &self.val_fields {
+            code.extend(ix.compile(env, compiler));
+            code.extend([Op::PopInto(idx)]);
+            idx += 1;
+        }
+        for px in &self.ptr_fields {
+            code.extend(px.compile(env, compiler));
+            code.extend([Op::PtrPopInto(idx)]);
+            idx += 1;
+        }
+        code
+    }
+}
+
 macro_rules! define_if {
     ($tname:ident, $t:path, tail=false) => {
         define_if!(@struct $tname, $t);
@@ -240,13 +279,8 @@ macro_rules! define_if {
 }
 
 define_if!(ValIf, ValExpression, tail = false);
-define_if!(PtrIf, PtrExpression_, tail = false);
+define_if!(PtrIf, PtrExpression, tail = false);
 define_if!(TailIf, TailStatement_, tail = true);
-
-#[derive(Debug)]
-enum PtrExpression {
-    Record(Vec<Box<dyn ValExpression>>, Vec<Box<dyn PtrExpression_>>),
-}
 
 #[derive(Debug)]
 enum TailStatement {
@@ -255,17 +289,8 @@ enum TailStatement {
     StaticCall(
         String,
         Vec<Box<dyn ValExpression>>,
-        Vec<Box<dyn PtrExpression_>>,
+        Vec<Box<dyn PtrExpression>>,
     ),
-}
-
-impl Compilable for PtrExpression {
-    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        match self {
-            PtrExpression::Record(ints, ptrs) => compiler.compile_record(ints, ptrs, env),
-            _ => todo!("{self:?}"),
-        }
-    }
 }
 
 impl Compilable for TailStatement {
@@ -292,30 +317,6 @@ impl Compiler {
 
     fn compile(&mut self, item: impl Compilable, env: &Env) -> Vec<Op<String>> {
         item.compile(env, self)
-    }
-
-    fn compile_record(
-        &mut self,
-        ints: &[Box<dyn ValExpression>],
-        ptrs: &[Box<dyn PtrExpression_>],
-        env: &Env,
-    ) -> Vec<Op<String>> {
-        let mut idx = 0;
-        let mut code = vec![Op::Alloc(RecordSignature::new(
-            ints.len() as Half,
-            ptrs.len() as Half,
-        ))];
-        for ix in ints {
-            code.extend(ix.compile(env, self));
-            code.extend([Op::PopInto(idx)]);
-            idx += 1;
-        }
-        for px in ptrs {
-            code.extend(px.compile(env, self));
-            code.extend([Op::PtrPopInto(idx)]);
-            idx += 1;
-        }
-        code
     }
 
     fn unique_label(&mut self, s: &str) -> String {
@@ -458,7 +459,7 @@ mod tests {
     fn compile_record_initialization() {
         assert_eq!(
             Compiler::new().compile(
-                PtrExpression::Record(boxvec![Const(1), Const(2)], boxvec![PtrNull],),
+                Record::new(boxvec![Const(1), Const(2)], boxvec![PtrNull],),
                 &Env::Empty
             ),
             vec![
