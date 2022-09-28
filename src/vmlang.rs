@@ -38,14 +38,14 @@ trait PtrExpression_: Ast {}
 trait TailStatement_: Ast {}
 
 mark!(
-    Ast: Const,
+    Ast: Const, IntRef,
     IntIf,
     IntExpression,
     PtrExpression,
     TailStatement,
     PtrNull
 );
-mark!(ValExpression: IntExpression, Const, IntIf, PtrNull);
+mark!(ValExpression: IntExpression, Const, IntRef, IntIf);
 mark!(PtrExpression_: PtrExpression, PtrNull);
 mark!(TailStatement_: TailStatement);
 
@@ -55,6 +55,19 @@ struct Const(Int);
 impl Compilable for Const {
     fn compile(&self, _env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
         vec![Op::Const(self.0)]
+    }
+}
+
+#[derive(Debug)]
+struct IntRef(String);
+
+impl Compilable for IntRef {
+    fn compile(&self, env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
+        match env.lookup(&self.0) {
+            None => panic!("unbound identifier {}", self.0),
+            Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
+            Some(_) => panic!("{} is not a value variable", self.0),
+        }
     }
 }
 
@@ -145,7 +158,6 @@ define_if!(TailIf, TailStatement_, tail = true);
 
 #[derive(Debug)]
 enum IntExpression {
-    Ref(String),
     Lambda(Vec<String>, Vec<String>, Box<dyn TailStatement_>),
 }
 
@@ -169,11 +181,6 @@ enum TailStatement {
 impl Compilable for IntExpression {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         match self {
-            IntExpression::Ref(ident) => match env.lookup(ident) {
-                None => panic!("unbound identifier {ident}"),
-                Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
-                Some(_) => panic!("{ident} is not a value variable"),
-            },
             IntExpression::Lambda(val_args, ptr_args, body) => {
                 let lam_label = compiler.unique_label("lambda");
                 let end_label = compiler.unique_label("end-lambda");
@@ -377,7 +384,7 @@ mod tests {
     fn compile_int_reference() {
         let env = Env::Empty.assoc("foo", Binding::LocalVal(7));
         assert_eq!(
-            Compiler::new().compile(IntExpression::Ref("foo".to_string()), &env),
+            Compiler::new().compile(IntRef("foo".to_string()), &env),
             vec![Op::PushLocal(7)]
         );
     }
@@ -406,7 +413,7 @@ mod tests {
         let env = Env::Empty
             .assoc("foo", Binding::LocalVal(0))
             .assoc("bar", Binding::LocalPtr(1));
-        Compiler::new().compile(IntExpression::Ref("bar".to_string()), &env);
+        Compiler::new().compile(IntRef("bar".to_string()), &env);
     }
 
     #[test]
