@@ -45,11 +45,12 @@ mark!(
     TailStatement,
     PtrNull,
     PtrRef,
-    Record
+    Record,
+    Halt
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
 mark!(PtrExpression: PtrNull, PtrRef, Record);
-mark!(TailStatement_: TailStatement);
+mark!(TailStatement_: Halt, TailStatement);
 
 #[derive(Debug)]
 struct Const(Int);
@@ -206,6 +207,21 @@ impl Compilable for Record {
     }
 }
 
+#[derive(Debug)]
+struct Halt(Box<dyn ValExpression>);
+
+impl Halt {
+    pub fn new(return_value: impl ValExpression + 'static) -> Self {
+        Halt(Box::new(return_value))
+    }
+}
+
+impl Compilable for Halt {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        join!(self.0.compile(env, compiler), [Op::Halt])
+    }
+}
+
 macro_rules! define_if {
     ($tname:ident, $t:path, tail=false) => {
         define_if!(@struct $tname, $t);
@@ -284,7 +300,6 @@ define_if!(TailIf, TailStatement_, tail = true);
 
 #[derive(Debug)]
 enum TailStatement {
-    Halt(Box<dyn ValExpression>),
     //Call(Expression, Vec<Expression>),
     StaticCall(
         String,
@@ -296,7 +311,6 @@ enum TailStatement {
 impl Compilable for TailStatement {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         match self {
-            TailStatement::Halt(expr) => join!(expr.compile(env, compiler), [Op::Halt]),
             _ => todo!("{self:?}"),
         }
     }
@@ -397,11 +411,7 @@ mod tests {
     #[test]
     fn compile_tail_conditional() {
         let code = Compiler::new().compile(
-            TailIf::new(
-                Const(1),
-                TailStatement::Halt(Box::new(Const(2))),
-                TailStatement::Halt(Box::new(Const(3))),
-            ),
+            TailIf::new(Const(1), Halt::new(Const(2)), Halt::new(Const(3))),
             &Env::Empty,
         );
         match code.as_slice() {
@@ -478,7 +488,7 @@ mod tests {
     #[test]
     fn compile_nullary_lambda() {
         let code = Compiler::new().compile(
-            Lambda::new(vec![], vec![], TailStatement::Halt(Box::new(Const(42)))),
+            Lambda::new(vec![], vec![], Halt::new(Const(42))),
             &Env::Empty,
         );
 
@@ -495,7 +505,7 @@ mod tests {
             Lambda::new(
                 vec!["a".to_string(), "b".to_string()],
                 vec!["x".to_string(), "y".to_string()],
-                TailStatement::Halt(Box::new(Const(42))),
+                Halt::new(Const(42)),
             ),
             &Env::Empty,
         );
