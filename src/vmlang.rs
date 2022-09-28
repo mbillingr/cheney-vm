@@ -31,8 +31,14 @@ trait IntExpression_: Ast {}
 trait PtrExpression_: Ast {}
 trait TailStatement_: Ast {}
 
-mark!(Ast: Const, IntExpression, PtrExpression, TailStatement);
-mark!(IntExpression_: IntExpression, Const);
+mark!(
+    Ast: Const,
+    IntIf,
+    IntExpression,
+    PtrExpression,
+    TailStatement
+);
+mark!(IntExpression_: IntExpression, Const, IntIf);
 mark!(PtrExpression_: PtrExpression);
 mark!(TailStatement_: TailStatement);
 
@@ -46,25 +52,27 @@ impl Compilable for Const {
 }
 
 #[derive(Debug)]
-struct IntIf<A, B, C> {
-    condition: A,
-    consequence: B,
-    alternative: C,
+struct IntIf {
+    condition: Box<dyn IntExpression_>,
+    consequence: Box<dyn IntExpression_>,
+    alternative: Box<dyn IntExpression_>,
 }
 
-impl<A: IntExpression_, B: IntExpression_, C: IntExpression_> IntIf<A, B, C> {
-    fn new(condition: A, consequence: B, alternative: C) -> Self {
+impl IntIf {
+    fn new(
+        condition: impl IntExpression_ + 'static,
+        consequence: impl IntExpression_ + 'static,
+        alternative: impl IntExpression_ + 'static,
+    ) -> Self {
         IntIf {
-            condition,
-            consequence,
-            alternative,
+            condition: Box::new(condition),
+            consequence: Box::new(consequence),
+            alternative: Box::new(alternative),
         }
     }
 }
 
-impl<A: IntExpression_, B: IntExpression_, C: IntExpression_> Ast for IntIf<A, B, C> {}
-impl<A: IntExpression_, B: IntExpression_, C: IntExpression_> IntExpression_ for IntIf<A, B, C> {}
-impl<A: IntExpression_, B: IntExpression_, C: IntExpression_> Compilable for IntIf<A, B, C> {
+impl Compilable for IntIf {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         let else_label = compiler.unique_label("elif");
         let end_label = compiler.unique_label("endif");
