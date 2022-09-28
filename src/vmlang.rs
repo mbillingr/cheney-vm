@@ -1,30 +1,73 @@
 //! super-simple functional semantics on top of the VM
 
 use crate::vm::{Half, Int, Op, RecordSignature};
+use std::fmt::Debug;
 use std::rc::Rc;
+
+macro_rules! mark {
+    ($trait:path: $($t:ty),*) => {
+        $(
+            impl $trait for $t {}
+        )*
+    }
+}
+
+trait Ast: Debug + Compilable {}
+trait IntExpression_: Ast {}
+trait PtrExpression_: Ast {}
+trait TailStatement_: Ast {}
+
+mark!(Ast: Const, IntExpression, PtrExpression, TailStatement);
+mark!(IntExpression_: Const, IntExpression);
+mark!(PtrExpression_: PtrExpression);
+mark!(TailStatement_: TailStatement);
+
+#[derive(Debug)]
+struct Const(Int);
+
+impl Compilable for Const {
+    fn compile(&self, _env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
+        vec![Op::Const(self.0)]
+    }
+}
 
 #[derive(Debug)]
 enum IntExpression {
-    Const(Int),
     Ref(String),
-    If(Box<IntExpression>, Box<IntExpression>, Box<IntExpression>),
-    Lambda(Vec<String>, Vec<String>, Box<TailStatement>),
+    If(
+        Box<dyn IntExpression_>,
+        Box<dyn IntExpression_>,
+        Box<dyn IntExpression_>,
+    ),
+    Lambda(Vec<String>, Vec<String>, Box<dyn TailStatement_>),
 }
 
 #[derive(Debug)]
 enum PtrExpression {
     Null,
-    Record(Vec<IntExpression>, Vec<PtrExpression>),
+    Record(Vec<Box<dyn IntExpression_>>, Vec<Box<dyn PtrExpression_>>),
     Ref(String),
-    If(IntExpression, Box<PtrExpression>, Box<PtrExpression>),
+    If(
+        Box<dyn IntExpression_>,
+        Box<dyn PtrExpression_>,
+        Box<dyn PtrExpression_>,
+    ),
 }
 
 #[derive(Debug)]
 enum TailStatement {
-    Halt(IntExpression),
+    Halt(Box<dyn IntExpression_>),
     //Call(Expression, Vec<Expression>),
-    StaticCall(String, Vec<IntExpression>, Vec<PtrExpression>),
-    If(IntExpression, Box<TailStatement>, Box<TailStatement>),
+    StaticCall(
+        String,
+        Vec<Box<dyn IntExpression_>>,
+        Vec<Box<dyn PtrExpression_>>,
+    ),
+    If(
+        Box<dyn IntExpression_>,
+        Box<dyn TailStatement_>,
+        Box<dyn TailStatement_>,
+    ),
 }
 
 macro_rules! concat {
@@ -44,7 +87,6 @@ macro_rules! concat {
 impl Compilable for IntExpression {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         match self {
-            IntExpression::Const(x) => vec![Op::Const(*x)],
             IntExpression::If(condition, consequence, alternative) => {
                 let else_label = compiler.unique_label("elif");
                 let end_label = compiler.unique_label("endif");
@@ -148,8 +190,8 @@ impl Compiler {
 
     fn compile_record(
         &mut self,
-        ints: &[IntExpression],
-        ptrs: &[PtrExpression],
+        ints: &[Box<dyn IntExpression_>],
+        ptrs: &[Box<dyn PtrExpression_>],
         env: &Env,
     ) -> Vec<Op<String>> {
         let mut idx = 0;
@@ -216,7 +258,7 @@ mod tests {
     #[test]
     fn compile_int_constant() {
         assert_eq!(
-            Compiler::new().compile(IntExpression::Const(42), &Env::Empty),
+            Compiler::new().compile(Const(42), &Env::Empty),
             vec![Op::Const(42)]
         );
     }
@@ -224,11 +266,7 @@ mod tests {
     #[test]
     fn compile_int_conditional() {
         let code = Compiler::new().compile(
-            IntExpression::If(
-                Box::new(IntExpression::Const(0)),
-                Box::new(IntExpression::Const(1)),
-                Box::new(IntExpression::Const(2)),
-            ),
+            IntExpression::If(Box::new(Const(0)), Box::new(Const(1)), Box::new(Const(2))),
             &Env::Empty,
         );
         match code.as_slice() {
@@ -289,8 +327,8 @@ mod tests {
         assert_eq!(
             Compiler::new().compile(
                 PtrExpression::Record(
-                    vec![IntExpression::Const(1), IntExpression::Const(2)],
-                    vec![PtrExpression::Null],
+                    vec![Box::new(Const(1)), Box::new(Const(2))],
+                    vec![Box::new(PtrExpression::Null)],
                 ),
                 &Env::Empty
             ),
@@ -313,7 +351,7 @@ mod tests {
             IntExpression::Lambda(
                 vec![],
                 vec![],
-                Box::new(TailStatement::Halt(IntExpression::Const(42))),
+                Box::new(TailStatement::Halt(Box::new(Const(42)))),
             ),
             &Env::Empty,
         );
@@ -331,7 +369,7 @@ mod tests {
             IntExpression::Lambda(
                 vec!["a".to_string(), "b".to_string()],
                 vec!["x".to_string(), "y".to_string()],
-                Box::new(TailStatement::Halt(IntExpression::Const(42))),
+                Box::new(TailStatement::Halt(Box::new(Const(42)))),
             ),
             &Env::Empty,
         );

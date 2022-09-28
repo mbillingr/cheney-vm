@@ -280,8 +280,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                     self.ptr_stack.push(ptr);
                 }
                 Op::PtrPeek(i) => {
-                    self
-                        .ptr_stack
+                    self.ptr_stack
                         .push(self.ptr_stack[self.ptr_stack.len() - 1 - i as usize]);
                 }
                 Op::PtrToVal => self.val_stack.push(self.ptr_stack.pop().unwrap()),
