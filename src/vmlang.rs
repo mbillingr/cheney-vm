@@ -39,14 +39,14 @@ trait TailStatement_: Ast {}
 
 mark!(
     Ast: Const,
-    IntRef,
+    ValRef,
     Lambda,
-    IntIf,
+    ValIf,
     PtrExpression,
     TailStatement,
     PtrNull
 );
-mark!(ValExpression: Const, IntRef, Lambda, IntIf);
+mark!(ValExpression: Const, ValRef, Lambda, ValIf);
 mark!(PtrExpression_: PtrExpression, PtrNull);
 mark!(TailStatement_: TailStatement);
 
@@ -60,9 +60,9 @@ impl Compilable for Const {
 }
 
 #[derive(Debug)]
-struct IntRef(String);
+struct ValRef(String);
 
-impl Compilable for IntRef {
+impl Compilable for ValRef {
     fn compile(&self, env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
         match env.lookup(&self.0) {
             None => panic!("unbound identifier {}", self.0),
@@ -213,7 +213,7 @@ macro_rules! define_if {
     }
 }
 
-define_if!(IntIf, ValExpression, tail = false);
+define_if!(ValIf, ValExpression, tail = false);
 define_if!(PtrIf, PtrExpression_, tail = false);
 define_if!(TailIf, TailStatement_, tail = true);
 
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn compile_int_conditional() {
-        let code = Compiler::new().compile(IntIf::new(Const(0), Const(1), Const(2)), &Env::Empty);
+        let code = Compiler::new().compile(ValIf::new(Const(0), Const(1), Const(2)), &Env::Empty);
         match code.as_slice() {
             [Op::Const(0), Op::GoIfZero(else_target), Op::Const(1), Op::Goto(end_target), Op::Label(else_label), Op::Const(2), Op::Label(end_label)]
                 if else_target == else_label
@@ -394,7 +394,7 @@ mod tests {
     fn compile_int_reference() {
         let env = Env::Empty.assoc("foo", Binding::LocalVal(7));
         assert_eq!(
-            Compiler::new().compile(IntRef("foo".to_string()), &env),
+            Compiler::new().compile(ValRef("foo".to_string()), &env),
             vec![Op::PushLocal(7)]
         );
     }
@@ -423,7 +423,7 @@ mod tests {
         let env = Env::Empty
             .assoc("foo", Binding::LocalVal(0))
             .assoc("bar", Binding::LocalPtr(1));
-        Compiler::new().compile(IntRef("bar".to_string()), &env);
+        Compiler::new().compile(ValRef("bar".to_string()), &env);
     }
 
     #[test]
