@@ -1,6 +1,6 @@
 //! super-simple functional semantics on top of the VM
 
-use crate::vm::{Half, Int, Op, RecordSignature};
+use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm};
 use std::fmt::Debug;
 use std::rc::Rc;
 
@@ -42,7 +42,8 @@ trait Compilable {
 }
 
 mark!(
-    Ast: Const,
+    Ast: FuncDef,
+    Const,
     ValRef,
     Lambda,
     PtrNull,
@@ -68,6 +69,15 @@ mark!(
 );
 
 macro_rules! vm_ast {
+    ((define ($name:ident ($($vparam:ident)*) ($($pparam:ident)*)) $body:tt)) => {
+        FuncDef::new(
+            stringify!($name),
+            vec![$(stringify!($vparam).to_string()),*],
+            vec![$(stringify!($pparam).to_string()),*],
+            vm_ast!{$body}
+        )
+    };
+
     ((const $x:expr)) => { Const($x) };
 
     ((val-ref $i:ident)) => { ValRef(stringify!($i).to_string()) };
@@ -132,6 +142,40 @@ macro_rules! vm_ast {
 }
 
 #[derive(Debug)]
+struct FuncDef {
+    name: String,
+    val_params: Vec<String>,
+    ptr_params: Vec<String>,
+    body: Box<dyn TailStatement>,
+}
+
+impl FuncDef {
+    pub fn new(
+        name: impl ToString,
+        val_params: Vec<String>,
+        ptr_params: Vec<String>,
+        body: impl TailStatement + 'static,
+    ) -> Self {
+        FuncDef {
+            name: name.to_string(),
+            val_params,
+            ptr_params,
+            body: Box::new(body),
+        }
+    }
+}
+
+impl Compilable for FuncDef {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let local_env = env.without_locals();
+        join!(
+            vec![Op::label(&self.name)],
+            compiler.compile_function(&self.val_params, &self.ptr_params, &*self.body, local_env)
+        )
+    }
+}
+
+#[derive(Debug)]
 struct Const(Int);
 
 impl Compilable for Const {
@@ -183,31 +227,10 @@ impl Compilable for Lambda {
         let mut code = vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())];
 
         let mut local_env = env.without_locals();
-        let mut idx = (self.val_params.len() + self.ptr_params.len()) as Int;
-
-        if idx > 0 {
-            code.push(Op::Alloc(RecordSignature::new(
-                self.val_params.len() as Half,
-                self.ptr_params.len() as Half,
-            )));
-            code.push(Op::SetLocals);
-        }
-
-        for pa in self.ptr_params.iter().rev() {
-            idx -= 1;
-            local_env = local_env.assoc(pa, Binding::LocalPtr(idx));
-            code.extend([Op::PtrPopLocal(idx)]);
-        }
-
-        for pa in self.val_params.iter().rev() {
-            idx -= 1;
-            local_env = local_env.assoc(pa, Binding::LocalVal(idx));
-            code.extend([Op::PopLocal(idx)]);
-        }
 
         join!(
             code,
-            self.body.compile(&local_env, compiler),
+            compiler.compile_function(&self.val_params, &self.ptr_params, &*self.body, local_env),
             [
                 Op::Label(end_label.clone()),
                 Op::PushAddr(lam_label.clone())
@@ -578,6 +601,39 @@ impl Compiler {
         code
     }
 
+    fn compile_function(
+        &mut self,
+        val_params: &[String],
+        ptr_params: &[String],
+        body: &dyn TailStatement,
+        mut local_env: Env,
+    ) -> Vec<Op<String>> {
+        let mut code = vec![];
+
+        let mut idx = (val_params.len() + ptr_params.len()) as Int;
+        if idx > 0 {
+            code.push(Op::Alloc(RecordSignature::new(
+                val_params.len() as Half,
+                ptr_params.len() as Half,
+            )));
+            code.push(Op::SetLocals);
+        }
+
+        for pa in ptr_params.iter().rev() {
+            idx -= 1;
+            local_env = local_env.assoc(pa, Binding::LocalPtr(idx));
+            code.extend([Op::PtrPopLocal(idx)]);
+        }
+
+        for pa in val_params.iter().rev() {
+            idx -= 1;
+            local_env = local_env.assoc(pa, Binding::LocalVal(idx));
+            code.extend([Op::PopLocal(idx)]);
+        }
+
+        join!(code, body.compile(&local_env, self))
+    }
+
     /// generate code to effectively pop the top record from the ptr_stack, push its value fields on
     /// val_stack and its pointer fields on ptr_stack.
     fn gen_destructure(&mut self, n_vals: Half, n_ptrs: Half) -> Vec<Op<String>> {
@@ -907,6 +963,19 @@ mod tests {
                 Op::push_addr("lambda-0"),
                 Op::PopInto(0), // store function pointer in closure
             ]
+        );
+    }
+
+    #[test]
+    fn compile_nullary_funcdef() {
+        let code = Compiler::new().compile(
+            vm_ast! {(define (foo () ()) (halt! (const 42)))},
+            &Env::Empty,
+        );
+
+        assert_eq!(
+            code,
+            [Op::Label("foo".to_string()), Op::Const(42), Op::Halt]
         );
     }
 }
