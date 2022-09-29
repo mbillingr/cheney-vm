@@ -412,7 +412,7 @@ impl Compilable for Closure {
             Op::Alloc(RecordSignature::new(n_val, n_ptr)),
         ]);
 
-        let mut closed_env = Env::Empty;
+        let mut closed_env = env.without_locals();
         let mut idx = 0;
         for cv in self
             .closed_vars
@@ -481,7 +481,10 @@ impl CallStatic {
 
 impl Compilable for CallStatic {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        assert_eq!(env.lookup(&self.function), Some(&Binding::Static));
+        if env.lookup(&self.function) != Some(&Binding::Static) {
+            println!("{env:?}");
+            panic!("{} is not a static function", self.function)
+        }
         let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
         code.extend([Op::Goto(self.function.clone())]);
         code
@@ -647,6 +650,7 @@ impl Compiler {
     fn compile_valref(&self, name: &str, env: &Env) -> Vec<Op<String>> {
         match env.lookup(name) {
             None => panic!("unbound identifier {name}"),
+            Some(Binding::Static) => vec![Op::push_addr(name)],
             Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
             Some(Binding::ClosedVal(idx)) => vec![Op::PushClosed(*idx)],
             Some(_) => panic!("{} is not a value variable", name),
@@ -795,8 +799,9 @@ impl Env {
 const BUILTIN_LT: Int = 0;
 const BUILTIN_ADD: Int = 1;
 const BUILTIN_SUB: Int = 2;
+const BUILTIN_MUL: Int = 3;
 
-fn register_builtin<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
+fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
     vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
         if ctx.pop_val() >= ctx.pop_val() {
             Int::MAX
@@ -805,7 +810,11 @@ fn register_builtin<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
         }
     });
     vm.register_builtin(BUILTIN_ADD, "+", |mut ctx| ctx.pop_val() + ctx.pop_val());
-    vm.register_builtin(BUILTIN_ADD, "-", |mut ctx| ctx.pop_val() - ctx.pop_val());
+    vm.register_builtin(BUILTIN_SUB, "-", |mut ctx| {
+        let b = ctx.pop_val();
+        ctx.pop_val() - b
+    });
+    vm.register_builtin(BUILTIN_MUL, "*", |mut ctx| ctx.pop_val() * ctx.pop_val());
 }
 
 fn builtin_env() -> Env {
@@ -813,13 +822,14 @@ fn builtin_env() -> Env {
     env = env.assoc("<", Binding::Builtin(BUILTIN_LT));
     env = env.assoc("+", Binding::Builtin(BUILTIN_ADD));
     env = env.assoc("-", Binding::Builtin(BUILTIN_SUB));
+    env = env.assoc("*", Binding::Builtin(BUILTIN_MUL));
     env
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::RecordSignature;
+    use crate::vm::{transform_labels, RecordSignature};
     use std::collections::HashMap;
 
     #[test]
@@ -1145,5 +1155,41 @@ mod tests {
                 Op::Halt
             ]
         );
+    }
+
+    #[test]
+    fn factorial() {
+        let code = Compiler::new().compile(
+            vm_ast! {
+                (program
+                    (define (stop (r) ())
+                        (halt! (val-ref r)))
+                    (define (main () ())
+                        (call-static fact
+                            ((const 5))
+                            ((closure ()
+                                (lambda (r) ()
+                                    (call-static stop ((val-ref r)) ()))))))
+                    (define (fact (n) (k))
+                        (tail-if (val-op < ((val-ref n) (const 1)) ())
+                            (call-closure (ptr-ref k) ((const 1)) ())
+                            (call-static fact
+                                ((val-op - ((val-ref n) (const 1)) ()))
+                                ((closure (n k)
+                                    (lambda (m) ()
+                                        (call-closure (ptr-ref k) ((val-op * ((val-ref n) (val-ref m)) ())) ())))))
+                        ))
+
+                )
+            },
+            &builtin_env(),
+        );
+
+        let code: Vec<_> = transform_labels(&code).collect();
+
+        let mut vm = Vm::default();
+        register_builtins(&mut vm);
+        let res = vm.run(&code);
+        assert_eq!(res, 1 * 2 * 3 * 4 * 5);
     }
 }

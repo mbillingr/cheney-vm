@@ -292,6 +292,9 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                     self.ptr_stack.push(ptr);
                     self.ptr_stack.push(ptr);
                 }
+                Op::PtrDrop(i) => {
+                    self.ptr_stack.remove(self.ptr_stack.len() - 1 - i as usize);
+                }
                 Op::PtrNip(i) => {
                     let ptr = self.ptr_stack.remove(self.ptr_stack.len() - 1 - i as usize);
                     self.ptr_stack.push(ptr);
