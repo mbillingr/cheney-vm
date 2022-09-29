@@ -46,6 +46,7 @@ mark!(
     Const,
     ValRef,
     Lambda,
+    ValOperation,
     PtrNull,
     PtrRef,
     Record,
@@ -58,7 +59,7 @@ mark!(
     PtrIf,
     TailIf
 );
-mark!(ValExpression: Const, ValRef, Lambda, ValIf);
+mark!(ValExpression: Const, ValRef, Lambda, ValOperation, ValIf);
 mark!(PtrExpression: PtrNull, PtrRef, Record, Closure, PtrIf);
 mark!(
     TailStatement: Halt,
@@ -87,6 +88,14 @@ macro_rules! vm_ast {
             vec![$(stringify!($vparam).to_string()),*],
             vec![$(stringify!($pparam).to_string()),*],
             vm_ast!{$body}
+        )
+    };
+
+    ((val-op $op:tt ($($vals:tt)*) ($($ptrs:tt)*))) => {
+        ValOperation::new(
+            stringify!($op),
+            boxvec![$(vm_ast!{$vals}),*],
+            boxvec![$(vm_ast!{$ptrs}),*]
         )
     };
 
@@ -240,6 +249,40 @@ impl Compilable for Lambda {
 }
 
 #[derive(Debug)]
+struct ValOperation {
+    operator: String,
+    var_args: Vec<Box<dyn ValExpression>>,
+    ptr_args: Vec<Box<dyn PtrExpression>>,
+}
+
+impl ValOperation {
+    pub fn new(
+        operator: impl ToString,
+        var_args: Vec<Box<dyn ValExpression>>,
+        ptr_args: Vec<Box<dyn PtrExpression>>,
+    ) -> Self {
+        ValOperation {
+            operator: operator.to_string(),
+            var_args,
+            ptr_args,
+        }
+    }
+}
+
+impl Compilable for ValOperation {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let builtin_idx = match env.lookup(&self.operator) {
+            None => panic!("unbound identifier {}", self.operator),
+            Some(Binding::Builtin(idx)) => *idx,
+            Some(_) => panic!("{} is not a builtin operator", self.operator),
+        };
+        let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
+        code.extend([Op::CallBuiltin(builtin_idx)]);
+        code
+    }
+}
+
+#[derive(Debug)]
 struct PtrNull;
 
 impl Compilable for PtrNull {
@@ -325,8 +368,8 @@ impl Compilable for Closure {
             match env.lookup(cv) {
                 None => panic!("unbound variable {cv}"),
                 Some(b) if b.is_value() => n_val += 1,
-                Some(b) if !b.is_value() => n_ptr += 1,
-                _ => unreachable!(),
+                Some(b) if b.is_pointer() => n_ptr += 1,
+                Some(b) => panic!("can't capture {b:?} in closure"),
             }
         }
 
@@ -351,7 +394,7 @@ impl Compilable for Closure {
         for cv in self
             .closed_vars
             .iter()
-            .filter(|cv| !env.lookup(cv).unwrap().is_value())
+            .filter(|cv| env.lookup(cv).unwrap().is_pointer())
         {
             code.extend(compiler.compile_ptrref(cv, env));
             code.extend([Op::PtrPopInto(idx)]);
@@ -654,6 +697,7 @@ impl Compiler {
 
 #[derive(Debug, Copy, Clone)]
 enum Binding {
+    Builtin(Int),
     LocalVal(Int),
     LocalPtr(Int),
     ClosedVal(Int),
@@ -663,8 +707,17 @@ enum Binding {
 impl Binding {
     fn is_value(&self) -> bool {
         match self {
+            Binding::Builtin(_) => false,
             Binding::LocalVal(_) | Binding::ClosedVal(_) => true,
             Binding::LocalPtr(_) | Binding::ClosedPtr(_) => false,
+        }
+    }
+
+    fn is_pointer(&self) -> bool {
+        match self {
+            Binding::Builtin(_) => false,
+            Binding::LocalVal(_) | Binding::ClosedVal(_) => false,
+            Binding::LocalPtr(_) | Binding::ClosedPtr(_) => true,
         }
     }
 }
@@ -706,8 +759,9 @@ impl Env {
 
 const BUILTIN_LT: Int = 0;
 const BUILTIN_ADD: Int = 1;
+const BUILTIN_SUB: Int = 2;
 
-pub fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
+fn register_builtin<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
     vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
         if ctx.pop_val() >= ctx.pop_val() {
             Int::MAX
@@ -716,6 +770,15 @@ pub fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC
         }
     });
     vm.register_builtin(BUILTIN_ADD, "+", |mut ctx| ctx.pop_val() + ctx.pop_val());
+    vm.register_builtin(BUILTIN_ADD, "-", |mut ctx| ctx.pop_val() - ctx.pop_val());
+}
+
+fn builtin_env() -> Env {
+    let mut env = Env::Empty;
+    env = env.assoc("<", Binding::Builtin(BUILTIN_LT));
+    env = env.assoc("+", Binding::Builtin(BUILTIN_ADD));
+    env = env.assoc("-", Binding::Builtin(BUILTIN_SUB));
+    env
 }
 
 #[cfg(test)]
@@ -809,6 +872,15 @@ mod tests {
             .assoc("foo", Binding::LocalVal(0))
             .assoc("bar", Binding::LocalPtr(1));
         Compiler::new().compile(vm_ast! {(val-ref bar)}, &env);
+    }
+
+    #[test]
+    fn compile_builtin_val_op() {
+        let env = builtin_env();
+        assert_eq!(
+            Compiler::new().compile(vm_ast! {(val-op + ((const 1) (const 2)) ())}, &env),
+            vec![Op::Const(1), Op::Const(2), Op::CallBuiltin(BUILTIN_ADD)]
+        );
     }
 
     #[test]
