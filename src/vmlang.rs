@@ -45,7 +45,6 @@ mark!(
     Ast: Const,
     ValRef,
     Lambda,
-    ValIf,
     PtrNull,
     PtrRef,
     Record,
@@ -53,11 +52,14 @@ mark!(
     Halt,
     CallStatic,
     CallDynamic,
-    CallClosure
+    CallClosure,
+    ValIf,
+    PtrIf,
+    TailIf
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
-mark!(PtrExpression: PtrNull, PtrRef, Record, Closure);
-mark!(TailStatement: Halt, CallStatic, CallDynamic, CallClosure);
+mark!(PtrExpression: PtrNull, PtrRef, Record, Closure, PtrIf);
+mark!(TailStatement: Halt, CallStatic, CallDynamic, CallClosure, TailIf);
 
 #[derive(Debug)]
 struct Const(Int);
