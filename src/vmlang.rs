@@ -42,7 +42,8 @@ trait Compilable {
 }
 
 mark!(
-    Ast: FuncDef,
+    Ast: Program,
+    FuncDef,
     Const,
     ValRef,
     Lambda,
@@ -70,6 +71,10 @@ mark!(
 );
 
 macro_rules! vm_ast {
+    ((program $($def:tt)*)) => {
+        Program::new(vec![$(vm_ast!{$def}),*])
+    };
+
     ((define ($name:ident ($($vparam:ident)*) ($($pparam:ident)*)) $body:tt)) => {
         FuncDef::new(
             stringify!($name),
@@ -148,6 +153,34 @@ macro_rules! vm_ast {
     ((ptr-if $a:tt $b:tt $c:tt)) => { PtrIf::new(vm_ast!{$a}, vm_ast!{$b}, vm_ast!{$c}) };
 
     ((tail-if $a:tt $b:tt $c:tt)) => { TailIf::new(vm_ast!{$a}, vm_ast!{$b}, vm_ast!{$c}) };
+}
+
+#[derive(Debug)]
+struct Program {
+    defs: Vec<FuncDef>,
+}
+
+impl Program {
+    pub fn new(defs: Vec<FuncDef>) -> Self {
+        Program { defs }
+    }
+}
+
+impl Compilable for Program {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let mut global_env = env.clone();
+        for def in &self.defs {
+            global_env = global_env.assoc(def.name.clone(), Binding::Static);
+        }
+
+        let mut code = vec![Op::goto("main")];
+
+        for def in &self.defs {
+            code.extend(def.compile(&global_env, compiler))
+        }
+
+        code
+    }
 }
 
 #[derive(Debug)]
@@ -233,9 +266,9 @@ impl Compilable for Lambda {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         let lam_label = compiler.unique_label("lambda");
         let end_label = compiler.unique_label("end-lambda");
-        let mut code = vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())];
+        let code = vec![Op::Goto(end_label.clone()), Op::Label(lam_label.clone())];
 
-        let mut local_env = env.without_locals();
+        let local_env = env.without_locals();
 
         join!(
             code,
@@ -448,8 +481,9 @@ impl CallStatic {
 
 impl Compilable for CallStatic {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        assert_eq!(env.lookup(&self.function), Some(&Binding::Static));
         let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
-        code.extend([Op::PushAddr(self.function.clone()), Op::Jump]);
+        code.extend([Op::Goto(self.function.clone())]);
         code
     }
 }
@@ -695,9 +729,10 @@ impl Compiler {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Binding {
     Builtin(Int),
+    Static,
     LocalVal(Int),
     LocalPtr(Int),
     ClosedVal(Int),
@@ -707,7 +742,7 @@ enum Binding {
 impl Binding {
     fn is_value(&self) -> bool {
         match self {
-            Binding::Builtin(_) => false,
+            Binding::Builtin(_) | Binding::Static => false,
             Binding::LocalVal(_) | Binding::ClosedVal(_) => true,
             Binding::LocalPtr(_) | Binding::ClosedPtr(_) => false,
         }
@@ -715,7 +750,7 @@ impl Binding {
 
     fn is_pointer(&self) -> bool {
         match self {
-            Binding::Builtin(_) => false,
+            Binding::Builtin(_) | Binding::Static => false,
             Binding::LocalVal(_) | Binding::ClosedVal(_) => false,
             Binding::LocalPtr(_) | Binding::ClosedPtr(_) => true,
         }
@@ -945,15 +980,14 @@ mod tests {
         assert_eq!(
             Compiler::new().compile(
                 vm_ast! {(call-static foo ((const 1) (const 2)) ((ptr-null)))},
-                &Env::Empty
+                &Env::Empty.assoc("foo", Binding::Static)
             ),
             vec![
                 Op::Const(1),
                 Op::Const(2),
                 Op::Const(0),
                 Op::ValToPtr,
-                Op::PushAddr("foo".to_string()),
-                Op::Jump,
+                Op::goto("foo"),
             ]
         );
     }
@@ -1062,6 +1096,54 @@ mod tests {
         assert_eq!(
             code,
             [Op::Label("foo".to_string()), Op::Const(42), Op::Halt]
+        );
+    }
+
+    #[test]
+    fn compile_empty_program() {
+        let code = Compiler::new().compile(vm_ast! {(program)}, &Env::Empty);
+
+        assert_eq!(code, [Op::goto("main")]);
+    }
+
+    #[test]
+    fn compile_simplest_program() {
+        let code = Compiler::new().compile(
+            vm_ast! {
+                (program
+                    (define (main () ()) (halt! (const 0))))
+            },
+            &Env::Empty,
+        );
+
+        assert_eq!(
+            code,
+            [Op::goto("main"), Op::label("main"), Op::Const(0), Op::Halt]
+        );
+    }
+
+    #[test]
+    fn compile_program() {
+        let code = Compiler::new().compile(
+            vm_ast! {
+                (program
+                    (define (main () ()) (call-static foo () ()))
+                    (define (foo () ()) (halt! (const 0)))
+                )
+            },
+            &Env::Empty,
+        );
+
+        assert_eq!(
+            code,
+            [
+                Op::goto("main"),
+                Op::label("main"),
+                Op::goto("foo"),
+                Op::label("foo"),
+                Op::Const(0),
+                Op::Halt
+            ]
         );
     }
 }
