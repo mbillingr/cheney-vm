@@ -35,7 +35,7 @@ macro_rules! join {
 trait Ast: Debug + Compilable {}
 trait ValExpression: Ast {}
 trait PtrExpression: Ast {}
-trait TailStatement_: Ast {}
+trait TailStatement: Ast {}
 
 trait Compilable {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>>;
@@ -57,7 +57,7 @@ mark!(
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
 mark!(PtrExpression: PtrNull, PtrRef, Record, Closure);
-mark!(TailStatement_: Halt, CallStatic, CallDynamic, CallClosure);
+mark!(TailStatement: Halt, CallStatic, CallDynamic, CallClosure);
 
 #[derive(Debug)]
 struct Const(Int);
@@ -87,14 +87,14 @@ impl Compilable for ValRef {
 struct Lambda {
     val_params: Vec<String>,
     ptr_params: Vec<String>,
-    body: Box<dyn TailStatement_>,
+    body: Box<dyn TailStatement>,
 }
 
 impl Lambda {
     pub fn new(
         val_params: Vec<String>,
         ptr_params: Vec<String>,
-        body: impl TailStatement_ + 'static,
+        body: impl TailStatement + 'static,
     ) -> Self {
         Lambda {
             val_params,
@@ -451,7 +451,7 @@ macro_rules! define_if {
 
 define_if!(ValIf, ValExpression, tail = false);
 define_if!(PtrIf, PtrExpression, tail = false);
-define_if!(TailIf, TailStatement_, tail = true);
+define_if!(TailIf, TailStatement, tail = true);
 
 struct Compiler {
     unique_counter: u64,
