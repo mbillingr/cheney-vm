@@ -59,7 +59,77 @@ mark!(
 );
 mark!(ValExpression: Const, ValRef, Lambda, ValIf);
 mark!(PtrExpression: PtrNull, PtrRef, Record, Closure, PtrIf);
-mark!(TailStatement: Halt, CallStatic, CallDynamic, CallClosure, TailIf);
+mark!(
+    TailStatement: Halt,
+    CallStatic,
+    CallDynamic,
+    CallClosure,
+    TailIf
+);
+
+macro_rules! vm_ast {
+    ((const $x:expr)) => { Const($x) };
+
+    ((val-ref $i:ident)) => { ValRef(stringify!($i).to_string()) };
+
+    ((lambda ($($vparam:ident)*) ($($pparam:ident)*) $body:tt)) => {
+        Lambda::new(
+            vec![$(stringify!($vparam).to_string()),*],
+            vec![$(stringify!($pparam).to_string()),*],
+            vm_ast!{$body}
+        )
+    };
+
+    ((ptr-null)) => { PtrNull };
+
+    ((ptr-ref $i:ident)) => { PtrRef(stringify!($i).to_string()) };
+
+    ((record ($($vals:tt)*) ($($ptrs:tt)*))) => {
+        Record::new(
+            boxvec![$(vm_ast!{$vals}),*],
+            boxvec![$(vm_ast!{$ptrs}),*]
+        )
+    };
+
+    ((closure ($($var:ident)*) $lambda:tt)) => {
+        Closure::new(
+            vec![$(stringify!($var).to_string()),*],
+            vm_ast!{$lambda}
+        )
+    };
+
+    ((halt! $val:tt)) => { Halt::new(vm_ast!{$val}) };
+
+    ((call-static $func:ident ($($vals:tt)*) ($($ptrs:tt)*))) => {
+        CallStatic::new(
+            stringify!($func),
+            boxvec![$(vm_ast!{$vals}),*],
+            boxvec![$(vm_ast!{$ptrs}),*]
+        )
+    };
+
+    ((call-dynamic $func:tt ($($vals:tt)*) ($($ptrs:tt)*))) => {
+        CallDynamic::new(
+            vm_ast!{$func},
+            boxvec![$(vm_ast!{$vals}),*],
+            boxvec![$(vm_ast!{$ptrs}),*]
+        )
+    };
+
+    ((call-closure $cls:tt ($($vals:tt)*) ($($ptrs:tt)*))) => {
+        CallClosure::new(
+            vm_ast!{$cls},
+            boxvec![$(vm_ast!{$vals}),*],
+            boxvec![$(vm_ast!{$ptrs}),*]
+        )
+    };
+
+    ((val-if $a:tt $b:tt $c:tt)) => { ValIf::new(vm_ast!{$a}, vm_ast!{$b}, vm_ast!{$c}) };
+
+    ((ptr-if $a:tt $b:tt $c:tt)) => { PtrIf::new(vm_ast!{$a}, vm_ast!{$b}, vm_ast!{$c}) };
+
+    ((tail-if $a:tt $b:tt $c:tt)) => { TailIf::new(vm_ast!{$a}, vm_ast!{$b}, vm_ast!{$c}) };
+}
 
 #[derive(Debug)]
 struct Const(Int);
@@ -587,14 +657,17 @@ mod tests {
     #[test]
     fn compile_int_constant() {
         assert_eq!(
-            Compiler::new().compile(Const(42), &Env::Empty),
+            Compiler::new().compile(vm_ast! {(const 42)}, &Env::Empty),
             vec![Op::Const(42)]
         );
     }
 
     #[test]
     fn compile_int_conditional() {
-        let code = Compiler::new().compile(ValIf::new(Const(0), Const(1), Const(2)), &Env::Empty);
+        let code = Compiler::new().compile(
+            vm_ast! {(val-if (const 0) (const 1) (const 2))},
+            &Env::Empty,
+        );
         match code.as_slice() {
             [Op::Const(0), Op::GoIfZero(else_target), Op::Const(1), Op::Goto(end_target), Op::Label(else_label), Op::Const(2), Op::Label(end_label)]
                 if else_target == else_label
@@ -606,7 +679,10 @@ mod tests {
 
     #[test]
     fn compile_ptr_conditional() {
-        let code = Compiler::new().compile(PtrIf::new(Const(1), PtrNull, PtrNull), &Env::Empty);
+        let code = Compiler::new().compile(
+            vm_ast! {(ptr-if (const 1) (ptr-null) (ptr-null))},
+            &Env::Empty,
+        );
         match code.as_slice() {
             [Op::Const(1), Op::GoIfZero(else_target), Op::Const(0), Op::ValToPtr, Op::Goto(end_target), Op::Label(else_label), Op::Const(0), Op::ValToPtr, Op::Label(end_label)]
                 if else_target == else_label
@@ -619,7 +695,7 @@ mod tests {
     #[test]
     fn compile_tail_conditional() {
         let code = Compiler::new().compile(
-            TailIf::new(Const(1), Halt::new(Const(2)), Halt::new(Const(3))),
+            vm_ast! {(tail-if (const 1) (halt! (const 2)) (halt! (const 3)))},
             &Env::Empty,
         );
         match code.as_slice() {
@@ -633,7 +709,7 @@ mod tests {
     fn compile_int_reference() {
         let env = Env::Empty.assoc("foo", Binding::LocalVal(7));
         assert_eq!(
-            Compiler::new().compile(ValRef("foo".to_string()), &env),
+            Compiler::new().compile(vm_ast! {(val-ref foo)}, &env),
             vec![Op::PushLocal(7)]
         );
     }
@@ -642,7 +718,7 @@ mod tests {
     fn compile_ptr_reference() {
         let env = Env::Empty.assoc("foo", Binding::LocalPtr(5));
         assert_eq!(
-            Compiler::new().compile(PtrRef::new("foo"), &env),
+            Compiler::new().compile(vm_ast! {(ptr-ref foo)}, &env),
             vec![Op::PtrPushLocal(5)]
         );
     }
@@ -653,7 +729,7 @@ mod tests {
         let env = Env::Empty
             .assoc("foo", Binding::LocalVal(0))
             .assoc("bar", Binding::LocalPtr(1));
-        Compiler::new().compile(PtrRef::new("foo"), &env);
+        Compiler::new().compile(vm_ast! {(ptr-ref foo)}, &env);
     }
 
     #[test]
@@ -662,13 +738,13 @@ mod tests {
         let env = Env::Empty
             .assoc("foo", Binding::LocalVal(0))
             .assoc("bar", Binding::LocalPtr(1));
-        Compiler::new().compile(ValRef("bar".to_string()), &env);
+        Compiler::new().compile(vm_ast! {(val-ref bar)}, &env);
     }
 
     #[test]
     fn compile_null_ptr() {
         assert_eq!(
-            Compiler::new().compile(PtrNull, &Env::Empty),
+            Compiler::new().compile(vm_ast! {(ptr-null)}, &Env::Empty),
             vec![Op::Const(0), Op::ValToPtr]
         );
     }
@@ -677,7 +753,7 @@ mod tests {
     fn compile_record_initialization() {
         assert_eq!(
             Compiler::new().compile(
-                Record::new(boxvec![Const(1), Const(2)], boxvec![PtrNull],),
+                vm_ast! {(record ((const 1) (const 2)) ((ptr-null)))},
                 &Env::Empty
             ),
             vec![
@@ -695,10 +771,8 @@ mod tests {
 
     #[test]
     fn compile_nullary_lambda() {
-        let code = Compiler::new().compile(
-            Lambda::new(vec![], vec![], Halt::new(Const(42))),
-            &Env::Empty,
-        );
+        let code =
+            Compiler::new().compile(vm_ast! {(lambda () () (halt! (const 42)))}, &Env::Empty);
 
         match &code[..] {
             [Op::Goto(goto_end), Op::Label(label_def), Op::Const(42), Op::Halt, Op::Label(label_end), Op::PushAddr(get_def)]
@@ -710,11 +784,7 @@ mod tests {
     #[test]
     fn compile_nary_lambda() {
         let code = Compiler::new().compile(
-            Lambda::new(
-                vec!["a".to_string(), "b".to_string()],
-                vec!["x".to_string(), "y".to_string()],
-                Halt::new(Const(42)),
-            ),
+            vm_ast! {(lambda (a b) (x y) (halt! (const 42)))},
             &Env::Empty,
         );
 
@@ -732,7 +802,7 @@ mod tests {
     fn compile_static_call() {
         assert_eq!(
             Compiler::new().compile(
-                CallStatic::new("foo", boxvec![Const(1), Const(2)], boxvec!(PtrNull)),
+                vm_ast! {(call-static foo ((const 1) (const 2)) ((ptr-null)))},
                 &Env::Empty
             ),
             vec![
@@ -751,7 +821,7 @@ mod tests {
         // Calling a number is invalid, but it compiles
         assert_eq!(
             Compiler::new().compile(
-                CallDynamic::new(Const(0), boxvec![Const(1), Const(2)], boxvec!(PtrNull)),
+                vm_ast! {(call-dynamic (const 0) ((const 1) (const 2)) ((ptr-null)))},
                 &Env::Empty
             ),
             vec![
@@ -770,7 +840,7 @@ mod tests {
         // Calling a Null pointer is invalid, but it compiles
         assert_eq!(
             Compiler::new().compile(
-                CallClosure::new(PtrNull, boxvec![Const(1), Const(2)], boxvec!(PtrNull)),
+                vm_ast! {(call-closure (ptr-null) ((const 1) (const 2)) ((ptr-null)))},
                 &Env::Empty
             ),
             vec![
@@ -796,11 +866,12 @@ mod tests {
     #[should_panic]
     fn lambda_cant_access_outer_vars() {
         let code = Compiler::new().compile(
-            Lambda::new(
-                vec!["a".to_string()],
-                vec![],
-                Halt::new(Lambda::new(vec![], vec![], Halt::new(ValRef::new("a")))),
-            ),
+            vm_ast! {
+                (lambda (a) ()
+                    (halt!
+                        (lambda () ()
+                            (halt! (val-ref a)))))
+            },
             &Env::Empty,
         );
     }
@@ -808,10 +879,7 @@ mod tests {
     #[test]
     fn lambda_can_access_closed_vars() {
         let code = Compiler::new().compile(
-            Closure::new(
-                vec!["p".to_string(), "a".to_string()],
-                Lambda::new(vec![], vec![], Halt::new(ValRef::new("a"))),
-            ),
+            vm_ast! {(closure (p a) (lambda () () (halt! (val-ref a))))},
             &Env::Empty
                 .assoc("a", Binding::LocalVal(7))
                 .assoc("p", Binding::LocalPtr(11)),
