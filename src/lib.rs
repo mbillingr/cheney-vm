@@ -28,7 +28,53 @@ macro_rules! join {
     };
 }
 
+macro_rules! strx {
+    (( $($x:expr),* $(,)? )) => { $crate::StrStruct::List(vec![$(strx!($x)),*]) };
+    ($x:expr) => { $x.serialize() };
+}
+
 mod memory;
+pub mod simple_type_lang;
 pub mod typelang;
 pub mod vm;
 pub mod vmlang;
+
+pub trait Serialize {
+    fn serialize(&self) -> StrStruct;
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum StrStruct {
+    Leaf(String),
+    List(Vec<StrStruct>),
+}
+
+impl Serialize for u64 {
+    fn serialize(&self) -> StrStruct {
+        StrStruct::Leaf(self.to_string())
+    }
+}
+
+impl Serialize for str {
+    fn serialize(&self) -> StrStruct {
+        StrStruct::Leaf(self.to_string())
+    }
+}
+
+impl Serialize for String {
+    fn serialize(&self) -> StrStruct {
+        StrStruct::Leaf(self.clone())
+    }
+}
+
+impl<T: Serialize> Serialize for [T] {
+    fn serialize(&self) -> StrStruct {
+        StrStruct::List(self.iter().map(T::serialize).collect())
+    }
+}
+
+impl<T: Serialize> Serialize for Box<T> {
+    fn serialize(&self) -> StrStruct {
+        (**self).serialize()
+    }
+}

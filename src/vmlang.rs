@@ -1,15 +1,16 @@
 //! super-simple functional semantics on top of the VM
 
 use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm};
+use crate::{Serialize, StrStruct};
 use std::fmt::Debug;
 use std::rc::Rc;
 
-trait Ast: Debug + Compilable {}
-trait ValExpression: Ast {}
-trait PtrExpression: Ast {}
-trait TailStatement: Ast {}
+pub trait Ast: Debug + Compilable + Serialize {}
+pub trait ValExpression: Ast {}
+pub trait PtrExpression: Ast {}
+pub trait TailStatement: Ast {}
 
-trait Compilable {
+pub trait Compilable {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>>;
 }
 
@@ -127,6 +128,18 @@ macro_rules! vm_ast {
     ((tail-if $a:tt $b:tt $c:tt)) => { TailIf::new(vm_ast!{$a}, vm_ast!{$b}, vm_ast!{$c}) };
 }
 
+impl Serialize for Box<dyn ValExpression> {
+    fn serialize(&self) -> StrStruct {
+        (**self).serialize()
+    }
+}
+
+impl Serialize for Box<dyn PtrExpression> {
+    fn serialize(&self) -> StrStruct {
+        (**self).serialize()
+    }
+}
+
 #[derive(Debug)]
 struct Program {
     defs: Vec<FuncDef>,
@@ -135,6 +148,12 @@ struct Program {
 impl Program {
     pub fn new(defs: Vec<FuncDef>) -> Self {
         Program { defs }
+    }
+}
+
+impl Serialize for Program {
+    fn serialize(&self) -> StrStruct {
+        strx!(("program", &self.defs))
     }
 }
 
@@ -179,6 +198,18 @@ impl FuncDef {
     }
 }
 
+impl Serialize for FuncDef {
+    fn serialize(&self) -> StrStruct {
+        strx!((
+            "define",
+            self.name,
+            self.val_params,
+            self.ptr_params,
+            self.body,
+        ))
+    }
+}
+
 impl Compilable for FuncDef {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         let local_env = env.without_locals();
@@ -189,8 +220,8 @@ impl Compilable for FuncDef {
     }
 }
 
-#[derive(Debug)]
-struct Const(Int);
+#[derive(Debug, Clone)]
+pub struct Const(pub Int);
 
 impl Compilable for Const {
     fn compile(&self, _env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
@@ -198,12 +229,24 @@ impl Compilable for Const {
     }
 }
 
+impl Serialize for Const {
+    fn serialize(&self) -> StrStruct {
+        strx!(("const", self.0))
+    }
+}
+
 #[derive(Debug)]
-struct ValRef(String);
+pub struct ValRef(String);
 
 impl ValRef {
     pub fn new(identifier: impl ToString) -> Self {
         ValRef(identifier.to_string())
+    }
+}
+
+impl Serialize for ValRef {
+    fn serialize(&self) -> StrStruct {
+        strx!(("val-ref", self.0))
     }
 }
 
@@ -231,6 +274,12 @@ impl Lambda {
             ptr_params,
             body: Box::new(body),
         }
+    }
+}
+
+impl Serialize for Lambda {
+    fn serialize(&self) -> StrStruct {
+        strx!(("lambda", self.val_params, self.ptr_params))
     }
 }
 
@@ -274,6 +323,13 @@ impl ValOperation {
     }
 }
 
+impl Serialize for ValOperation {
+    fn serialize(&self) -> StrStruct {
+        self.var_args.serialize()
+        //strx!(("val-op", self.operator, self.var_args, self.ptr_args))
+    }
+}
+
 impl Compilable for ValOperation {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         let builtin_idx = match env.lookup(&self.operator) {
@@ -287,8 +343,14 @@ impl Compilable for ValOperation {
     }
 }
 
-#[derive(Debug)]
-struct PtrNull;
+#[derive(Debug, Clone)]
+pub struct PtrNull;
+
+impl Serialize for PtrNull {
+    fn serialize(&self) -> StrStruct {
+        strx!("ptr-null")
+    }
+}
 
 impl Compilable for PtrNull {
     fn compile(&self, _env: &Env, _compiler: &mut Compiler) -> Vec<Op<String>> {
@@ -297,11 +359,17 @@ impl Compilable for PtrNull {
 }
 
 #[derive(Debug)]
-struct PtrRef(String);
+pub struct PtrRef(String);
 
 impl PtrRef {
     pub fn new(identifier: impl ToString) -> Self {
         PtrRef(identifier.to_string())
+    }
+}
+
+impl Serialize for PtrRef {
+    fn serialize(&self) -> StrStruct {
+        strx!(("ptr-ref", self.0))
     }
 }
 
@@ -326,6 +394,12 @@ impl Record {
             val_fields,
             ptr_fields,
         }
+    }
+}
+
+impl Serialize for Record {
+    fn serialize(&self) -> StrStruct {
+        strx!(("record", self.val_fields, self.ptr_fields))
     }
 }
 
@@ -362,6 +436,12 @@ impl Closure {
             closed_vars,
             lambda,
         }
+    }
+}
+
+impl Serialize for Closure {
+    fn serialize(&self) -> StrStruct {
+        strx!(("closure", self.closed_vars, self.lambda))
     }
 }
 
@@ -424,6 +504,12 @@ impl Halt {
     }
 }
 
+impl Serialize for Halt {
+    fn serialize(&self) -> StrStruct {
+        strx!(("halt", self.0))
+    }
+}
+
 impl Compilable for Halt {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         join!(self.0.compile(env, compiler), [Op::Halt])
@@ -431,7 +517,7 @@ impl Compilable for Halt {
 }
 
 #[derive(Debug)]
-struct CallStatic {
+pub struct CallStatic {
     function: String,
     var_args: Vec<Box<dyn ValExpression>>,
     ptr_args: Vec<Box<dyn PtrExpression>>,
@@ -448,6 +534,12 @@ impl CallStatic {
             var_args,
             ptr_args,
         }
+    }
+}
+
+impl Serialize for CallStatic {
+    fn serialize(&self) -> StrStruct {
+        strx!(("call-static", self.function, self.var_args, self.ptr_args))
     }
 }
 
@@ -484,6 +576,12 @@ impl CallDynamic {
     }
 }
 
+impl Serialize for CallDynamic {
+    fn serialize(&self) -> StrStruct {
+        strx!(("call-dynamic", self.function, self.var_args, self.ptr_args))
+    }
+}
+
 impl Compilable for CallDynamic {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
@@ -514,6 +612,12 @@ impl CallClosure {
     }
 }
 
+impl Serialize for CallClosure {
+    fn serialize(&self) -> StrStruct {
+        strx!(("call-closure", self.closure, self.var_args, self.ptr_args))
+    }
+}
+
 impl Compilable for CallClosure {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
         let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
@@ -525,16 +629,16 @@ impl Compilable for CallClosure {
 }
 
 macro_rules! define_if {
-    ($tname:ident, $t:path, tail=false) => {
-        define_if!(@struct $tname, $t);
+    ($tname:ident, $t:path, $ser:expr, tail=false) => {
+        define_if!(@struct $tname, $t, $ser);
         define_if!(@compile $tname, $t, tail=false);
     };
-    ($tname:ident, $t:path, tail=true) => {
-        define_if!(@struct $tname, $t);
+    ($tname:ident, $t:path, $ser:expr, tail=true) => {
+        define_if!(@struct $tname, $t, $ser);
         define_if!(@compile $tname, $t, tail=true);
     };
 
-    (@struct $tname:ident, $t:path) => {
+    (@struct $tname:ident, $t:path, $ser:expr) => {
         #[derive(Debug)]
         struct $tname {
             condition: Box<dyn ValExpression>,
@@ -553,6 +657,12 @@ macro_rules! define_if {
                     consequence: Box::new(consequence),
                     alternative: Box::new(alternative),
                 }
+            }
+        }
+
+        impl Serialize for $tname {
+            fn serialize(&self) -> StrStruct {
+                strx!(($ser, self.condition, self.consequence, self.alternative))
             }
         }
     };
@@ -596,16 +706,16 @@ macro_rules! define_if {
     }
 }
 
-define_if!(ValIf, ValExpression, tail = false);
-define_if!(PtrIf, PtrExpression, tail = false);
-define_if!(TailIf, TailStatement, tail = true);
+define_if!(ValIf, ValExpression, "val-if", tail = false);
+define_if!(PtrIf, PtrExpression, "ptr-if", tail = false);
+define_if!(TailIf, TailStatement, "tail-if", tail = true);
 
-struct Compiler {
+pub struct Compiler {
     unique_counter: u64,
 }
 
 impl Compiler {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Compiler { unique_counter: 0 }
     }
 
@@ -706,7 +816,7 @@ impl Compiler {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum Binding {
+pub enum Binding {
     Builtin(Int),
     Static,
     LocalVal(Int),
@@ -733,21 +843,23 @@ impl Binding {
     }
 }
 
+pub type Env = Environment<Binding>;
+
 #[derive(Debug, Clone)]
-enum Env {
+pub enum Environment<T: Clone> {
     Empty,
-    Entry(Rc<(String, Binding, Env)>),
+    Entry(Rc<(String, T, Environment<T>)>),
 }
 
-impl Env {
-    fn assoc(&self, name: impl ToString, thing: Binding) -> Self {
-        Env::Entry(Rc::new((name.to_string(), thing, self.clone())))
+impl<T: Clone> Environment<T> {
+    pub fn assoc(&self, name: impl ToString, thing: T) -> Self {
+        Environment::Entry(Rc::new((name.to_string(), thing, self.clone())))
     }
 
-    fn lookup(&self, name: &str) -> Option<&Binding> {
+    pub fn lookup(&self, name: &str) -> Option<&T> {
         match self {
-            Env::Empty => None,
-            Env::Entry(e) => {
+            Environment::Empty => None,
+            Environment::Entry(e) => {
                 if e.0 == name {
                     Some(&e.1)
                 } else {
@@ -756,11 +868,13 @@ impl Env {
             }
         }
     }
+}
 
+impl Env {
     fn without_locals(&self) -> Self {
         match self {
-            Env::Empty => Env::Empty,
-            Env::Entry(entry) => match &**entry {
+            Environment::Empty => Environment::Empty,
+            Environment::Entry(entry) => match &**entry {
                 (_, Binding::LocalPtr(_) | Binding::LocalVal(_), next) => next.without_locals(),
                 (name, binding, next) => next.without_locals().assoc(name, *binding),
             },
