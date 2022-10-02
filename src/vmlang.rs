@@ -775,7 +775,7 @@ const BUILTIN_MUL: Int = 3;
 
 fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
     vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
-        if ctx.pop_val() >= ctx.pop_val() {
+        if ctx.pop_val() > ctx.pop_val() {
             Int::MAX
         } else {
             0
@@ -1174,7 +1174,7 @@ mod tests {
                         (halt! (val-ref r)))
                     (define (main () ())
                         (call-static fib
-                            ((const 35))
+                            ((const 5))
                             ((closure ()
                                 (lambda (r) ()
                                     (call-static stop ((val-ref r)) ()))))))
