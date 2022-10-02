@@ -4,34 +4,6 @@ use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm}
 use std::fmt::Debug;
 use std::rc::Rc;
 
-macro_rules! mark {
-    ($trait:path: $($t:ty),*) => {
-        $(
-            impl $trait for $t {}
-        )*
-    }
-}
-
-macro_rules! boxvec {
-    ($($x:expr),*) => {
-        vec![$(Box::new($x)),*]
-    }
-}
-
-macro_rules! join {
-    () => { vec![] };
-    ($x:expr) => { $x };
-    ($first:expr, $($more:expr),*) => {
-        {
-            let mut items = $first;
-            $(
-                items.extend($more);
-            )*
-            items
-        }
-    };
-}
-
 trait Ast: Debug + Compilable {}
 trait ValExpression: Ast {}
 trait PtrExpression: Ast {}
