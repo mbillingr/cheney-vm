@@ -1,7 +1,5 @@
 use crate::vm::Int;
-use crate::vmlang::{
-    self, Const, Environment, PtrExpression, PtrNull, TailStatement, ValExpression,
-};
+use crate::vmlang::{self, Const, Environment, PtrExpression, PtrNull, ValExpression};
 use std::fmt::Debug;
 
 pub trait Expression:
@@ -12,6 +10,8 @@ pub trait Expression:
     + Compilable<Box<dyn PtrExpression>>
 {
 }
+
+pub trait TailStatement: Compilable<Box<dyn vmlang::TailStatement>> {}
 
 pub trait Compilable<T>: Debug {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> T {
@@ -84,7 +84,14 @@ impl Compiler {
 mark! { Expression:
     Const,
     PtrNull,
-    Ref
+    Ref,
+    IfExpr
+}
+
+mark! { TailStatement:
+    Halt,
+    Call,
+    IfStmt
 }
 
 impl MaybeIdentifier for Const {}
@@ -150,6 +157,25 @@ impl Compilable<Box<dyn PtrExpression>> for Ref {
 }
 
 #[derive(Debug)]
+struct Halt {
+    value: Box<dyn Expression>,
+}
+
+impl Halt {
+    pub fn new(value: impl Expression + 'static) -> Self {
+        Halt {
+            value: Box::new(value),
+        }
+    }
+}
+
+impl Compilable<Box<dyn vmlang::TailStatement>> for Halt {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn vmlang::TailStatement> {
+        Box::new(vmlang::Halt(self.value.compile(env, compiler)))
+    }
+}
+
+#[derive(Debug)]
 struct Call {
     function: Box<dyn Expression>,
     args: Vec<Box<dyn Expression>>,
@@ -164,8 +190,8 @@ impl Call {
     }
 }
 
-impl Compilable<Box<dyn TailStatement>> for Call {
-    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn TailStatement> {
+impl Compilable<Box<dyn vmlang::TailStatement>> for Call {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn vmlang::TailStatement> {
         let t = self.function.infer_type(env);
         match t {
             Type::StaticFn(sig) => {
@@ -201,6 +227,90 @@ impl Compilable<Box<dyn TailStatement>> for Call {
             }
             Type::Val | Type::Ptr => panic!("{t:?} is not callable"),
         }
+    }
+}
+
+#[derive(Debug)]
+struct IfExpr {
+    condition: Box<dyn Expression>,
+    consequence: Box<dyn Expression>,
+    alternative: Box<dyn Expression>,
+}
+
+impl IfExpr {
+    pub fn new(
+        condition: impl Expression + 'static,
+        consequence: impl Expression + 'static,
+        alternative: impl Expression + 'static,
+    ) -> Self {
+        IfExpr {
+            condition: Box::new(condition),
+            consequence: Box::new(consequence),
+            alternative: Box::new(alternative),
+        }
+    }
+}
+
+impl MaybeIdentifier for IfExpr {}
+
+impl Infer for IfExpr {
+    fn infer_type(&self, env: &Env) -> Type {
+        let t = self.condition.infer_type(env);
+        assert_eq!(t, self.alternative.infer_type(env));
+        t
+    }
+}
+
+impl Compilable<Box<dyn ValExpression>> for IfExpr {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn ValExpression> {
+        Box::new(vmlang::ValIf {
+            condition: self.condition.compile(env, compiler),
+            consequence: self.consequence.compile(env, compiler),
+            alternative: self.alternative.compile(env, compiler),
+        })
+    }
+}
+
+impl Compilable<Box<dyn PtrExpression>> for IfExpr {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn PtrExpression> {
+        Box::new(vmlang::PtrIf {
+            condition: self.condition.compile(env, compiler),
+            consequence: self.consequence.compile(env, compiler),
+            alternative: self.alternative.compile(env, compiler),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct IfStmt {
+    condition: Box<dyn Expression>,
+    consequence: Box<dyn TailStatement>,
+    alternative: Box<dyn TailStatement>,
+}
+
+impl IfStmt {
+    pub fn new(
+        condition: impl Expression + 'static,
+        consequence: impl TailStatement + 'static,
+        alternative: impl TailStatement + 'static,
+    ) -> Self {
+        IfStmt {
+            condition: Box::new(condition),
+            consequence: Box::new(consequence),
+            alternative: Box::new(alternative),
+        }
+    }
+}
+
+impl MaybeIdentifier for IfStmt {}
+
+impl Compilable<Box<dyn vmlang::TailStatement>> for IfStmt {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn vmlang::TailStatement> {
+        Box::new(vmlang::TailIf {
+            condition: self.condition.compile(env, compiler),
+            consequence: self.consequence.compile(env, compiler),
+            alternative: self.alternative.compile(env, compiler),
+        })
     }
 }
 
@@ -276,6 +386,42 @@ mod tests {
                 "foo",
                 boxvec![Const(1), Const(2)],
                 boxvec![PtrNull, PtrNull]
+            )
+            .serialize(),
+        );
+    }
+
+    #[test]
+    fn if_val_expr() {
+        let vml: Box<dyn ValExpression> =
+            IfExpr::new(Const(0), Const(1), Const(2)).compile(&Env::Empty, &mut Compiler);
+        assert_eq!(
+            vml.serialize(),
+            vmlang::ValIf::new(Const(0), Const(1), Const(2)).serialize(),
+        );
+    }
+
+    #[test]
+    fn if_ptr_expr() {
+        let vml: Box<dyn PtrExpression> =
+            IfExpr::new(Const(0), PtrNull, PtrNull).compile(&Env::Empty, &mut Compiler);
+        assert_eq!(
+            vml.serialize(),
+            vmlang::PtrIf::new(Const(0), PtrNull, PtrNull).serialize(),
+        );
+    }
+
+    #[test]
+    fn if_tail() {
+        let vml: Box<dyn vmlang::TailStatement> =
+            IfStmt::new(Const(0), Halt::new(Const(1)), Halt::new(Const(2)))
+                .compile(&Env::Empty, &mut Compiler);
+        assert_eq!(
+            vml.serialize(),
+            vmlang::TailIf::new(
+                Const(0),
+                vmlang::Halt::new(Const(1)),
+                vmlang::Halt::new(Const(2))
             )
             .serialize(),
         );

@@ -549,7 +549,7 @@ impl Compilable for Closure {
 }
 
 #[derive(Debug)]
-struct Halt(Box<dyn ValExpression>);
+pub struct Halt(pub Box<dyn ValExpression>);
 
 impl Halt {
     pub fn new(return_value: impl ValExpression + 'static) -> Self {
@@ -693,14 +693,14 @@ macro_rules! define_if {
 
     (@struct $tname:ident, $t:path, $ser:expr) => {
         #[derive(Debug)]
-        struct $tname {
-            condition: Box<dyn ValExpression>,
-            consequence: Box<dyn $t>,
-            alternative: Box<dyn $t>,
+        pub struct $tname {
+            pub condition: Box<dyn ValExpression>,
+            pub consequence: Box<dyn $t>,
+            pub alternative: Box<dyn $t>,
         }
 
         impl $tname {
-            fn new(
+            pub fn new(
                 condition: impl ValExpression + 'static,
                 consequence: impl $t + 'static,
                 alternative: impl $t + 'static,
