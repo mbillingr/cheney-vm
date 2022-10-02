@@ -1,5 +1,6 @@
 //! super-simple functional semantics on top of the VM
 
+use crate::vm::Op::PtrDrop;
 use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm};
 use crate::{Serialize, StrStruct};
 use std::fmt::Debug;
@@ -60,6 +61,10 @@ macro_rules! vm_ast {
     ((const $x:expr)) => { Const($x) };
 
     ((val-ref $i:ident)) => { ValRef(stringify!($i).to_string()) };
+
+    ((val-get-field $idx:tt $x:tt)) => { ValGetField::new(vm_ast!{$idx}, vm_ast!{$x}) };
+
+    ((ptr-get-field $idx:tt $x:tt)) => { PtrGetField::new(vm_ast!{$idx}, vm_ast!{$x}) };
 
     ((lambda ($($vparam:ident)*) ($($pparam:ident)*) $body:tt)) => {
         Lambda::new(
@@ -420,6 +425,54 @@ impl Compilable for Record {
             code.extend([Op::PtrPopInto(idx)]);
             idx += 1;
         }
+        code
+    }
+}
+
+#[derive(Debug)]
+struct ValGetField {
+    idx: Box<dyn ValExpression>,
+    rec: Box<dyn PtrExpression>,
+}
+
+impl ValGetField {
+    pub fn new(idx: impl ValExpression + 'static, rec: impl PtrExpression + 'static) -> Self {
+        ValGetField {
+            idx: Box::new(idx),
+            rec: Box::new(rec),
+        }
+    }
+}
+
+impl Compilable for ValGetField {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let mut code = self.rec.compile(env, compiler);
+        code.extend(self.idx.compile(env, compiler));
+        code.extend([Op::PushFromDyn, PtrDrop(0)]);
+        code
+    }
+}
+
+#[derive(Debug)]
+struct PtrGetField {
+    idx: Box<dyn ValExpression>,
+    rec: Box<dyn PtrExpression>,
+}
+
+impl PtrGetField {
+    pub fn new(idx: impl ValExpression + 'static, rec: impl PtrExpression + 'static) -> Self {
+        PtrGetField {
+            idx: Box::new(idx),
+            rec: Box::new(rec),
+        }
+    }
+}
+
+impl Compilable for PtrGetField {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        let mut code = self.rec.compile(env, compiler);
+        code.extend(self.idx.compile(env, compiler));
+        code.extend([Op::PtrPushFromDyn, PtrDrop(1)]);
         code
     }
 }
@@ -916,6 +969,7 @@ fn builtin_env() -> Env {
 mod tests {
     use super::*;
     use crate::vm::{transform_labels, RecordSignature};
+    use crate::vmlang::Binding::LocalPtr;
     use std::collections::HashMap;
 
     #[test]
@@ -1040,6 +1094,38 @@ mod tests {
                 Op::PtrPopInto(2),
             ]
         );
+    }
+
+    #[test]
+    fn compile_get_val_field() {
+        assert_eq!(
+            Compiler::new().compile(
+                vm_ast! {(val-get-field (const 1) (ptr-ref foo))},
+                &Env::Empty.assoc("foo", LocalPtr(0))
+            ),
+            vec![
+                Op::PtrPushLocal(0),
+                Op::Const(1),
+                Op::PushFromDyn,
+                Op::PtrDrop(0)
+            ]
+        )
+    }
+
+    #[test]
+    fn compile_get_ptr_field() {
+        assert_eq!(
+            Compiler::new().compile(
+                vm_ast! {(ptr-get-field (const 1) (ptr-ref foo))},
+                &Env::Empty.assoc("foo", LocalPtr(0))
+            ),
+            vec![
+                Op::PtrPushLocal(0),
+                Op::Const(1),
+                Op::PtrPushFromDyn,
+                Op::PtrDrop(1)
+            ]
+        )
     }
 
     #[test]
