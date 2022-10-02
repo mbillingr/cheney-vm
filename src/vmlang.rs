@@ -556,21 +556,21 @@ impl Compilable for CallStatic {
 }
 
 #[derive(Debug)]
-struct CallDynamic {
-    function: Box<dyn ValExpression>,
-    var_args: Vec<Box<dyn ValExpression>>,
-    ptr_args: Vec<Box<dyn PtrExpression>>,
+pub struct CallDynamic {
+    pub function: Box<dyn ValExpression>,
+    pub val_args: Vec<Box<dyn ValExpression>>,
+    pub ptr_args: Vec<Box<dyn PtrExpression>>,
 }
 
 impl CallDynamic {
     pub fn new(
         f: impl ValExpression + 'static,
-        var_args: Vec<Box<dyn ValExpression>>,
+        val_args: Vec<Box<dyn ValExpression>>,
         ptr_args: Vec<Box<dyn PtrExpression>>,
     ) -> Self {
         CallDynamic {
             function: Box::new(f),
-            var_args,
+            val_args,
             ptr_args,
         }
     }
@@ -578,13 +578,13 @@ impl CallDynamic {
 
 impl Serialize for CallDynamic {
     fn serialize(&self) -> StrStruct {
-        strx!(("call-dynamic", self.function, self.var_args, self.ptr_args))
+        strx!(("call-dynamic", self.function, self.val_args, self.ptr_args))
     }
 }
 
 impl Compilable for CallDynamic {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
+        let mut code = compiler.compile_args(&self.val_args, &self.ptr_args, env);
         code.extend(self.function.compile(env, compiler));
         code.extend([Op::Jump]);
         code

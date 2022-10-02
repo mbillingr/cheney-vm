@@ -1,3 +1,4 @@
+use crate::vm::Int;
 use crate::vmlang::{
     self, Const, Environment, PtrExpression, PtrNull, TailStatement, ValExpression,
 };
@@ -33,6 +34,7 @@ pub enum Type {
     Val,
     Ptr,
     StaticFn(FnSig),
+    Fn(FnSig),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -52,6 +54,7 @@ type Env = Environment<(Binding, Type)>;
 #[derive(Debug, Clone)]
 pub enum Binding {
     Static,
+    Local(Int),
 }
 
 pub struct Compiler;
@@ -175,6 +178,16 @@ impl Compilable<Box<dyn TailStatement>> for Call {
                     ptr_args,
                 ))
             }
+            Type::Fn(sig) => {
+                sig.check(&self.args, env);
+                let (val_args, ptr_args) = compiler.distribute_args(&self.args, env);
+                let function: Box<dyn ValExpression> = self.function.compile(env, compiler);
+                Box::new(vmlang::CallDynamic {
+                    function,
+                    val_args,
+                    ptr_args,
+                })
+            }
             Type::Val | Type::Ptr => panic!("{t:?} is not callable"),
         }
     }
@@ -183,6 +196,7 @@ impl Compilable<Box<dyn TailStatement>> for Call {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vmlang::ValRef;
     use crate::Serialize;
 
     #[test]
@@ -193,6 +207,17 @@ mod tests {
                 .compile(&env, &mut Compiler)
                 .serialize(),
             vmlang::CallStatic::new("foo", vec![], vec![]).serialize(),
+        );
+    }
+
+    #[test]
+    fn dynamic_call() {
+        let env = Env::Empty.assoc("foo", (Binding::Local(0), Type::Fn(FnSig(vec![]))));
+        assert_eq!(
+            Call::new(Ref::new("foo"), vec![])
+                .compile(&env, &mut Compiler)
+                .serialize(),
+            vmlang::CallDynamic::new(ValRef::new("foo"), vec![], vec![]).serialize(),
         );
     }
 
