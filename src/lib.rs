@@ -29,6 +29,7 @@ macro_rules! join {
 }
 
 mod memory;
+pub mod rtlang;
 pub mod typelang;
 pub mod vm;
 pub mod vmlang;

@@ -4,17 +4,25 @@ use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm}
 use std::fmt::Debug;
 use std::rc::Rc;
 
-trait Ast: Debug + Compilable {}
-trait ValExpression: Ast {}
-trait PtrExpression: Ast {}
-trait TailStatement: Ast {}
+pub trait VmAst: Debug + Compilable {}
+pub trait ValExpression: VmAst {}
+pub trait PtrExpression: VmAst {}
+pub trait TailStatement: VmAst {}
 
-trait Compilable {
+pub trait Compilable {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>>;
 }
 
+impl VmAst for Box<dyn TailStatement> {}
+impl TailStatement for Box<dyn TailStatement> {}
+impl Compilable for Box<dyn TailStatement> {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
+        (**self).compile(env, compiler)
+    }
+}
+
 mark!(
-    Ast: Program,
+    VmAst: Program,
     FuncDef,
     Const,
     ValRef,
@@ -128,7 +136,7 @@ macro_rules! vm_ast {
 }
 
 #[derive(Debug)]
-struct Program {
+pub struct Program {
     defs: Vec<FuncDef>,
 }
 
@@ -156,7 +164,7 @@ impl Compilable for Program {
 }
 
 #[derive(Debug)]
-struct FuncDef {
+pub struct FuncDef {
     name: String,
     val_params: Vec<String>,
     ptr_params: Vec<String>,
@@ -600,7 +608,7 @@ define_if!(ValIf, ValExpression, tail = false);
 define_if!(PtrIf, PtrExpression, tail = false);
 define_if!(TailIf, TailStatement, tail = true);
 
-struct Compiler {
+pub struct Compiler {
     unique_counter: u64,
 }
 
@@ -706,7 +714,7 @@ impl Compiler {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum Binding {
+pub enum Binding {
     Builtin(Int),
     Static,
     LocalVal(Int),
@@ -734,7 +742,7 @@ impl Binding {
 }
 
 #[derive(Debug, Clone)]
-enum Env {
+pub enum Env {
     Empty,
     Entry(Rc<(String, Binding, Env)>),
 }
