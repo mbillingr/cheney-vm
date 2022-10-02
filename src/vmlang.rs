@@ -1164,4 +1164,43 @@ mod tests {
         let res = vm.run(&code);
         assert_eq!(res, 1 * 2 * 3 * 4 * 5);
     }
+
+    #[test]
+    fn fibonacci() {
+        let code = Compiler::new().compile(
+            vm_ast! {
+                (program
+                    (define (stop (r) ())
+                        (halt! (val-ref r)))
+                    (define (main () ())
+                        (call-static fib
+                            ((const 35))
+                            ((closure ()
+                                (lambda (r) ()
+                                    (call-static stop ((val-ref r)) ()))))))
+                    (define (fib (n) (k))
+                        (tail-if (val-op < ((val-ref n) (const 2)) ())
+                            (call-closure (ptr-ref k) ((const 1)) ())
+                            (call-static fib
+                                ((val-op - ((val-ref n) (const 1)) ()))
+                                ((closure (n k)
+                                    (lambda (f1) ()
+                                        (call-static fib
+                                            ((val-op - ((val-ref n) (const 2)) ()))
+                                            ((closure (f1 n k)
+                                                (lambda (f2) ()
+                                                    (call-closure (ptr-ref k) ((val-op + ((val-ref f1) (val-ref f2)) ())) ())))))))))))
+
+                )
+            },
+            &builtin_env(),
+        );
+
+        let code: Vec<_> = transform_labels(&code).collect();
+
+        let mut vm = Vm::default();
+        register_builtins(&mut vm);
+        let res = vm.run(&code);
+        assert_eq!(res, 8); // 1 1 2 3 5 8 13 21
+    }
 }

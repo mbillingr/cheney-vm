@@ -136,11 +136,12 @@ impl<T: GarbageCollector> GarbageCollector for ChattyCollector<T> {
     fn collect(&self, roots: &mut [Ptr], heap: &mut Vec<Int>) {
         let used_before = heap.len();
         self.collector.collect(roots, heap);
+        let used_after = heap.len();
 
         let capacity = heap.capacity();
         let freed = used_before - heap.len();
         let available = capacity - heap.len();
-        println!("GC -- Heap size: {capacity}, {available} available ({freed} freed)");
+        println!("GC -- Heap size: {capacity}, {used_after} used, {freed} collected");
     }
 }
 
