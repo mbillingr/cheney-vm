@@ -11,6 +11,7 @@ const INITIAL_HEAP_SIZE: usize = 8;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Op<T> {
+    Comment(T),
     Halt,
     Label(T),
     PushAddr(T),
@@ -73,7 +74,7 @@ impl<T> Op<T> {
 
     fn convert<U>(&self) -> Op<U> {
         match self {
-            Op::Label(_) | Op::PushAddr(_) | Op::Goto(_) | Op::GoIfZero(_) => {
+            Op::Comment(_) | Op::Label(_) | Op::PushAddr(_) | Op::Goto(_) | Op::GoIfZero(_) => {
                 panic!("Invalid conversion")
             }
             Op::Halt => Op::Halt,
@@ -107,6 +108,7 @@ impl<T> Op<T> {
 pub fn transform_labels<T: Eq + Hash>(code: &[Op<T>]) -> impl Iterator<Item = Op<Int>> + '_ {
     let labels = find_label_offsets(code);
     code.iter().filter_map(move |op| match op {
+        Op::Comment(_) => None,
         Op::Label(_) => None,
         Op::Goto(label) => Some(Op::Goto(labels[label])),
         Op::GoIfZero(label) => Some(Op::GoIfZero(labels[label])),
