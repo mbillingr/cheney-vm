@@ -592,21 +592,21 @@ impl Compilable for CallDynamic {
 }
 
 #[derive(Debug)]
-struct CallClosure {
-    closure: Box<dyn PtrExpression>,
-    var_args: Vec<Box<dyn ValExpression>>,
-    ptr_args: Vec<Box<dyn PtrExpression>>,
+pub struct CallClosure {
+    pub closure: Box<dyn PtrExpression>,
+    pub val_args: Vec<Box<dyn ValExpression>>,
+    pub ptr_args: Vec<Box<dyn PtrExpression>>,
 }
 
 impl CallClosure {
     pub fn new(
         f: impl PtrExpression + 'static,
-        var_args: Vec<Box<dyn ValExpression>>,
+        val_args: Vec<Box<dyn ValExpression>>,
         ptr_args: Vec<Box<dyn PtrExpression>>,
     ) -> Self {
         CallClosure {
             closure: Box::new(f),
-            var_args,
+            val_args,
             ptr_args,
         }
     }
@@ -614,13 +614,13 @@ impl CallClosure {
 
 impl Serialize for CallClosure {
     fn serialize(&self) -> StrStruct {
-        strx!(("call-closure", self.closure, self.var_args, self.ptr_args))
+        strx!(("call-closure", self.closure, self.val_args, self.ptr_args))
     }
 }
 
 impl Compilable for CallClosure {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<String>> {
-        let mut code = compiler.compile_args(&self.var_args, &self.ptr_args, env);
+        let mut code = compiler.compile_args(&self.val_args, &self.ptr_args, env);
         code.extend(self.closure.compile(env, compiler));
         code.extend(compiler.gen_destructure(1, 1));
         code.extend([Op::SetClosure, Op::Jump]);
