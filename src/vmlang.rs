@@ -385,7 +385,7 @@ impl Compilable for PtrRef {
 }
 
 #[derive(Debug)]
-struct Record {
+pub struct Record {
     val_fields: Vec<Box<dyn ValExpression>>,
     ptr_fields: Vec<Box<dyn PtrExpression>>,
 }

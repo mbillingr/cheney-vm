@@ -85,6 +85,7 @@ mark! { Expression:
     Const,
     PtrNull,
     Ref,
+    Record,
     IfExpr
 }
 
@@ -153,6 +154,25 @@ impl Compilable<Box<dyn ValExpression>> for Ref {
 impl Compilable<Box<dyn PtrExpression>> for Ref {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn PtrExpression> {
         Box::new(vmlang::PtrRef::new(&self.0))
+    }
+}
+
+#[derive(Debug)]
+struct Record(Vec<Box<dyn Expression>>);
+
+impl Infer for Record {
+    fn infer_type(&self, env: &Env) -> Type {
+        Type::Ptr
+    }
+}
+
+impl MaybeIdentifier for Record {}
+
+impl Compilable<Box<dyn ValExpression>> for Record {}
+impl Compilable<Box<dyn PtrExpression>> for Record {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn PtrExpression> {
+        let (val_args, ptr_args) = compiler.distribute_args(&self.0, env);
+        Box::new(vmlang::Record::new(val_args, ptr_args))
     }
 }
 
@@ -422,6 +442,21 @@ mod tests {
                 Const(0),
                 vmlang::Halt::new(Const(1)),
                 vmlang::Halt::new(Const(2))
+            )
+            .serialize(),
+        );
+    }
+
+    #[test]
+    fn allocate() {
+        let vml: Box<dyn PtrExpression> =
+            Record(boxvec![Const(1), PtrNull, Const(2), Record(vec![])])
+                .compile(&Env::Empty, &mut Compiler);
+        assert_eq!(
+            vml.serialize(),
+            vmlang::Record::new(
+                boxvec![Const(1), Const(2)],
+                boxvec![PtrNull, vmlang::Record::new(vec![], vec![])]
             )
             .serialize(),
         );
