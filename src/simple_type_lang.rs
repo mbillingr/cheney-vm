@@ -32,10 +32,26 @@ pub trait MaybeIdentifier {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Type {
     Val,
-    Ptr,
+    Ptr(Vec<Type>),
     StaticFn(FnSig),
     Fn(FnSig),
     Closure(FnSig),
+}
+
+impl Type {
+    pub fn is_val(&self) -> bool {
+        match self {
+            Type::Val | Type::Fn(_) => true,
+            Type::Ptr(_) | Type::StaticFn(_) | Type::Closure(_) => false,
+        }
+    }
+
+    pub fn is_ptr(&self) -> bool {
+        match self {
+            Type::Val | Type::Fn(_) | Type::StaticFn(_) => false,
+            Type::Ptr(_) | Type::Closure(_) => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -72,12 +88,36 @@ impl Compiler {
         for arg in args {
             match arg.infer_type(env) {
                 Type::Val => val_args.push(arg.compile(env, self)),
-                Type::Ptr => ptr_args.push(arg.compile(env, self)),
+                Type::Ptr(_) => ptr_args.push(arg.compile(env, self)),
                 _ => todo!(),
             }
         }
 
         (val_args, ptr_args)
+    }
+
+    fn map_index(&mut self, index: Int, field_types: &[Type]) -> Int {
+        let mut n_val = 0;
+        let mut n_ptr = 0;
+        let mut nth = 0;
+        for (i, t) in field_types.iter().enumerate() {
+            let i = i as Int;
+            if t.is_val() {
+                if i == index {
+                    return n_val;
+                }
+                n_val += 1;
+            } else if t.is_ptr() {
+                if i == index {
+                    nth = n_ptr;
+                }
+                n_ptr += 1;
+            } else {
+                panic!("invalid type")
+            }
+        }
+
+        n_val + nth
     }
 }
 
@@ -86,6 +126,7 @@ mark! { Expression:
     PtrNull,
     Ref,
     Record,
+    GetField,
     IfExpr
 }
 
@@ -111,7 +152,7 @@ impl Compilable<Box<dyn PtrExpression>> for Const {}
 impl MaybeIdentifier for PtrNull {}
 impl Infer for PtrNull {
     fn infer_type(&self, _env: &Env) -> Type {
-        Type::Ptr
+        Type::Ptr(vec![])
     }
 }
 impl Compilable<Box<dyn ValExpression>> for PtrNull {}
@@ -147,12 +188,14 @@ impl MaybeIdentifier for Ref {
 
 impl Compilable<Box<dyn ValExpression>> for Ref {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn ValExpression> {
+        assert!(self.infer_type(env).is_val());
         Box::new(vmlang::ValRef::new(&self.0))
     }
 }
 
 impl Compilable<Box<dyn PtrExpression>> for Ref {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn PtrExpression> {
+        assert!(self.infer_type(env).is_ptr());
         Box::new(vmlang::PtrRef::new(&self.0))
     }
 }
@@ -162,7 +205,7 @@ struct Record(Vec<Box<dyn Expression>>);
 
 impl Infer for Record {
     fn infer_type(&self, env: &Env) -> Type {
-        Type::Ptr
+        Type::Ptr(self.0.iter().map(|x| x.infer_type(env)).collect())
     }
 }
 
@@ -173,6 +216,62 @@ impl Compilable<Box<dyn PtrExpression>> for Record {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn PtrExpression> {
         let (val_args, ptr_args) = compiler.distribute_args(&self.0, env);
         Box::new(vmlang::Record::new(val_args, ptr_args))
+    }
+}
+
+#[derive(Debug)]
+struct GetField {
+    index: Int,
+    record: Box<dyn Expression>,
+}
+
+impl GetField {
+    pub fn new(index: Int, record: impl Expression + 'static) -> Self {
+        GetField {
+            index,
+            record: Box::new(record),
+        }
+    }
+}
+
+impl Infer for GetField {
+    fn infer_type(&self, env: &Env) -> Type {
+        match self.record.infer_type(env) {
+            Type::Ptr(ts) => ts[self.index as usize].clone(),
+            t => panic!("wrong type: {t:?}"),
+        }
+    }
+}
+
+impl MaybeIdentifier for GetField {}
+
+impl Compilable<Box<dyn ValExpression>> for GetField {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn ValExpression> {
+        assert!(self.infer_type(env).is_val());
+        let index = match self.record.infer_type(env) {
+            Type::Ptr(ts) => compiler.map_index(self.index, &ts),
+            t => panic!("wrong type: {t:?}"),
+        };
+        let rec: Box<dyn PtrExpression> = self.record.compile(env, compiler);
+        Box::new(vmlang::ValGetField {
+            idx: Box::new(Const(index)),
+            rec,
+        })
+    }
+}
+
+impl Compilable<Box<dyn PtrExpression>> for GetField {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn PtrExpression> {
+        assert!(self.infer_type(env).is_ptr());
+        let index = match self.record.infer_type(env) {
+            Type::Ptr(ts) => compiler.map_index(self.index, &ts),
+            t => panic!("wrong type: {t:?}"),
+        };
+        let rec: Box<dyn PtrExpression> = self.record.compile(env, compiler);
+        Box::new(vmlang::PtrGetField {
+            idx: Box::new(Const(index)),
+            rec,
+        })
     }
 }
 
@@ -245,7 +344,7 @@ impl Compilable<Box<dyn vmlang::TailStatement>> for Call {
                     ptr_args,
                 })
             }
-            Type::Val | Type::Ptr => panic!("{t:?} is not callable"),
+            Type::Val | Type::Ptr(_) => panic!("{t:?} is not callable"),
         }
     }
 }
@@ -275,7 +374,8 @@ impl MaybeIdentifier for IfExpr {}
 
 impl Infer for IfExpr {
     fn infer_type(&self, env: &Env) -> Type {
-        let t = self.condition.infer_type(env);
+        assert_eq!(self.condition.infer_type(env), Type::Val);
+        let t = self.consequence.infer_type(env);
         assert_eq!(t, self.alternative.infer_type(env));
         t
     }
@@ -326,6 +426,7 @@ impl MaybeIdentifier for IfStmt {}
 
 impl Compilable<Box<dyn vmlang::TailStatement>> for IfStmt {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Box<dyn vmlang::TailStatement> {
+        assert_eq!(self.condition.infer_type(env), Type::Val);
         Box::new(vmlang::TailIf {
             condition: self.condition.compile(env, compiler),
             consequence: self.consequence.compile(env, compiler),
@@ -380,10 +481,23 @@ mod tests {
             "foo",
             (
                 Binding::Static,
-                Type::StaticFn(FnSig(vec![Type::Val, Type::Ptr])),
+                Type::StaticFn(FnSig(vec![Type::Val, Type::Ptr(vec![])])),
             ),
         );
         Call::new(Ref::new("foo"), vec![]).compile(&env, &mut Compiler);
+    }
+
+    #[test]
+    #[should_panic]
+    fn call_sig_mismatch_wrong_ptr_type() {
+        let env = Env::Empty.assoc(
+            "foo",
+            (
+                Binding::Static,
+                Type::StaticFn(FnSig(vec![Type::Ptr(vec![Type::Val])])),
+            ),
+        );
+        Call::new(Ref::new("foo"), boxvec![PtrNull]).compile(&env, &mut Compiler);
     }
 
     #[test]
@@ -392,7 +506,12 @@ mod tests {
             "foo",
             (
                 Binding::Static,
-                Type::StaticFn(FnSig(vec![Type::Val, Type::Ptr, Type::Val, Type::Ptr])),
+                Type::StaticFn(FnSig(vec![
+                    Type::Val,
+                    Type::Ptr(vec![]),
+                    Type::Val,
+                    Type::Ptr(vec![]),
+                ])),
             ),
         );
         assert_eq!(
@@ -459,6 +578,53 @@ mod tests {
                 boxvec![PtrNull, vmlang::Record::new(vec![], vec![])]
             )
             .serialize(),
+        );
+    }
+
+    #[test]
+    fn get_field() {
+        let expr = GetField::new(0, Record(boxvec![PtrNull, Const(42)]));
+        let vml: Box<dyn PtrExpression> = expr.compile(&Env::Empty, &mut Compiler);
+        assert_eq!(
+            vml.serialize(),
+            vmlang::PtrGetField::new(
+                Const(1),
+                vmlang::Record::new(boxvec![Const(42)], boxvec![PtrNull])
+            )
+            .serialize()
+        );
+
+        let expr = GetField::new(1, Record(boxvec![PtrNull, Const(42)]));
+        let vml: Box<dyn ValExpression> = expr.compile(&Env::Empty, &mut Compiler);
+        assert_eq!(
+            vml.serialize(),
+            vmlang::ValGetField::new(
+                Const(0),
+                vmlang::Record::new(boxvec![Const(42)], boxvec![PtrNull])
+            )
+            .serialize()
+        );
+
+        let expr = GetField::new(1, Record(boxvec![Const(42), PtrNull]));
+        let vml: Box<dyn PtrExpression> = expr.compile(&Env::Empty, &mut Compiler);
+        assert_eq!(
+            vml.serialize(),
+            vmlang::PtrGetField::new(
+                Const(1),
+                vmlang::Record::new(boxvec![Const(42)], boxvec![PtrNull])
+            )
+            .serialize()
+        );
+
+        let expr = GetField::new(0, Record(boxvec![Const(42), PtrNull]));
+        let vml: Box<dyn ValExpression> = expr.compile(&Env::Empty, &mut Compiler);
+        assert_eq!(
+            vml.serialize(),
+            vmlang::ValGetField::new(
+                Const(0),
+                vmlang::Record::new(boxvec![Const(42)], boxvec![PtrNull])
+            )
+            .serialize()
         );
     }
 }

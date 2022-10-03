@@ -22,10 +22,12 @@ mark!(
     ValRef,
     Lambda,
     ValOperation,
+    ValGetField,
     PtrNull,
     PtrRef,
     Record,
     Closure,
+    PtrGetField,
     Halt,
     CallStatic,
     CallDynamic,
@@ -34,8 +36,22 @@ mark!(
     PtrIf,
     TailIf
 );
-mark!(ValExpression: Const, ValRef, Lambda, ValOperation, ValIf);
-mark!(PtrExpression: PtrNull, PtrRef, Record, Closure, PtrIf);
+mark!(
+    ValExpression: Const,
+    ValRef,
+    Lambda,
+    ValOperation,
+    ValGetField,
+    ValIf
+);
+mark!(
+    PtrExpression: PtrNull,
+    PtrRef,
+    Record,
+    Closure,
+    PtrGetField,
+    PtrIf
+);
 mark!(
     TailStatement: Halt,
     CallStatic,
@@ -430,9 +446,9 @@ impl Compilable for Record {
 }
 
 #[derive(Debug)]
-struct ValGetField {
-    idx: Box<dyn ValExpression>,
-    rec: Box<dyn PtrExpression>,
+pub struct ValGetField {
+    pub idx: Box<dyn ValExpression>,
+    pub rec: Box<dyn PtrExpression>,
 }
 
 impl ValGetField {
@@ -453,10 +469,16 @@ impl Compilable for ValGetField {
     }
 }
 
+impl Serialize for ValGetField {
+    fn serialize(&self) -> StrStruct {
+        strx!(("val-get-field", self.idx, self.rec))
+    }
+}
+
 #[derive(Debug)]
-struct PtrGetField {
-    idx: Box<dyn ValExpression>,
-    rec: Box<dyn PtrExpression>,
+pub struct PtrGetField {
+    pub idx: Box<dyn ValExpression>,
+    pub rec: Box<dyn PtrExpression>,
 }
 
 impl PtrGetField {
@@ -474,6 +496,12 @@ impl Compilable for PtrGetField {
         code.extend(self.idx.compile(env, compiler));
         code.extend([Op::PtrPushFromDyn, PtrDrop(1)]);
         code
+    }
+}
+
+impl Serialize for PtrGetField {
+    fn serialize(&self) -> StrStruct {
+        strx!(("ptr-get-field", self.idx, self.rec))
     }
 }
 
