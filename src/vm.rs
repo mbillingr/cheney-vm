@@ -24,7 +24,8 @@ pub enum Op<T> {
 
     Const(Int),
 
-    SetLocals,
+    PtrPushLocals,
+    PtrPopLocals,
     PushLocal(Int),
     PopLocal(Int),
     PtrPushLocal(Int),
@@ -85,7 +86,8 @@ impl<T> Op<T> {
             Op::CallBuiltin(idx) => Op::CallBuiltin(*idx),
             Op::Alloc(s) => Op::Alloc(*s),
             Op::Const(x) => Op::Const(*x),
-            Op::SetLocals => Op::SetLocals,
+            Op::PtrPushLocals => Op::PtrPushLocals,
+            Op::PtrPopLocals => Op::PtrPopLocals,
             Op::PushLocal(idx) => Op::PushLocal(*idx),
             Op::PopLocal(idx) => Op::PopLocal(*idx),
             Op::SetClosure => Op::SetClosure,
@@ -246,6 +248,16 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
         loop {
             let op = program[ip];
             ip += 1;
+            /*println!(
+                "LCL: {:?}, VS: {:?}, PS: {:?}, next OP: {:?}",
+                self.peek(self.lcl),
+                self.val_stack,
+                self.ptr_stack
+                    .iter()
+                    .map(|&p| self.peek(p))
+                    .collect::<Vec<_>>(),
+                op
+            );*/
             match op {
                 Op::Halt => return self.val_stack.pop().unwrap_or(123456789),
                 Op::PushAddr(pos) => self.val_stack.push(pos),
@@ -265,7 +277,8 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                     self.ptr_stack.push(ptr);
                 }
                 Op::Const(x) => self.val_stack.push(x),
-                Op::SetLocals => self.lcl = self.ptr_stack.pop().unwrap(),
+                Op::PtrPushLocals => self.ptr_stack.push(self.lcl),
+                Op::PtrPopLocals => self.lcl = self.ptr_stack.pop().unwrap(),
                 Op::PushLocal(idx) => self.val_stack.push(self.get_ptr_offset(self.lcl, idx)),
                 Op::PopLocal(idx) => {
                     let val = self.val_stack.pop().unwrap();
@@ -422,6 +435,61 @@ pub trait GarbageCollector: Debug {
     fn collect(&self, roots: &mut [Ptr], heap: &mut Vec<Int>);
 }
 
+impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
+    fn peek(&self, ptr: Int) -> Val {
+        let mut ptr = ptr as usize;
+        if ptr == 0 {
+            return Val::Rec(vec![]);
+        }
+        let rs = RecordSignature::from_int(self.heap[ptr - 1]);
+        let mut data = Vec::with_capacity(rs.size());
+
+        for _ in 0..rs.n_primitive() {
+            data.push(Val::Int(self.heap[ptr]));
+            ptr += 1;
+        }
+
+        for _ in 0..rs.n_pointer() {
+            data.push(self.peek(self.heap[ptr]));
+            ptr += 1;
+        }
+
+        Val::Rec(data)
+    }
+
+    fn poke(&mut self, ptr: Int, data: &[Int]) {
+        let ptr = ptr as usize;
+        let rs = RecordSignature::from_int(self.heap[ptr - 1]);
+        assert!(data.len() <= rs.size());
+        self.heap[ptr..ptr + data.len()].copy_from_slice(data);
+    }
+}
+
+#[derive(Eq, PartialEq)]
+enum Val {
+    Int(Int),
+    Rec(Vec<Val>),
+}
+
+impl Debug for Val {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Val::Int(x) => x.fmt(f),
+            Val::Rec(xs) => {
+                write!(f, "[")?;
+                let mut xs = xs.iter();
+                if let Some(x) = xs.next() {
+                    x.fmt(f)?;
+                }
+                for x in xs {
+                    write!(f, ", {:?}", x)?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,31 +512,6 @@ mod tests {
         );
     }
 
-    #[derive(Eq, PartialEq)]
-    enum Val {
-        Int(Int),
-        Rec(Vec<Val>),
-    }
-
-    impl Debug for Val {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Val::Int(x) => x.fmt(f),
-                Val::Rec(xs) => {
-                    write!(f, "[")?;
-                    let mut xs = xs.iter();
-                    if let Some(x) = xs.next() {
-                        x.fmt(f)?;
-                    }
-                    for x in xs {
-                        write!(f, ", {:?}", x)?;
-                    }
-                    write!(f, "]")
-                }
-            }
-        }
-    }
-
     macro_rules! rec {
         ($($x:tt),*) => {
             Val::Rec(vec![$(val![$x]),*])
@@ -483,36 +526,6 @@ mod tests {
         ($x:expr) => {
             Val::Int($x)
         };
-    }
-
-    impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
-        fn peek(&self, ptr: Int) -> Val {
-            let mut ptr = ptr as usize;
-            if ptr == 0 {
-                return Val::Rec(vec![]);
-            }
-            let rs = RecordSignature::from_int(self.heap[ptr - 1]);
-            let mut data = Vec::with_capacity(rs.size());
-
-            for _ in 0..rs.n_primitive() {
-                data.push(Val::Int(self.heap[ptr]));
-                ptr += 1;
-            }
-
-            for _ in 0..rs.n_pointer() {
-                data.push(self.peek(self.heap[ptr]));
-                ptr += 1;
-            }
-
-            Val::Rec(data)
-        }
-
-        fn poke(&mut self, ptr: Int, data: &[Int]) {
-            let ptr = ptr as usize;
-            let rs = RecordSignature::from_int(self.heap[ptr - 1]);
-            assert!(data.len() <= rs.size());
-            self.heap[ptr..ptr + data.len()].copy_from_slice(data);
-        }
     }
 
     #[test]
@@ -835,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn test_function_call_semantic() {
+    fn test_function_tailcall_semantic() {
         let mut vm = Vm::default();
 
         // (define (func x) (halt x)
@@ -849,6 +862,48 @@ mod tests {
             Op::Label("main"),
             Op::Const(99),
             Op::Goto("func"),
+        ])
+        .collect::<Vec<_>>();
+
+        let res = vm.run(&code);
+
+        assert_eq!(res, 99);
+    }
+
+    #[test]
+    fn test_function_call_semantic() {
+        let mut vm = Vm::default();
+
+        // (define (func x) x)
+        // (halt (func 99))
+        let code = transform_labels(&[
+            Op::Goto("main"),
+            // func
+            Op::Label("func"),
+            // load x
+            Op::PushLocal(1),
+            // return
+            Op::PushLocal(0),
+            Op::PtrPushLocal(2),
+            Op::PtrPopLocals,
+            Op::Jump,
+            // main
+            Op::Label("main"),
+            Op::Alloc(RecordSignature::new(2, 1)),
+            // Return address ("continuation")
+            Op::PushAddr("after-func"),
+            Op::PopInto(0),
+            // Current frame
+            Op::PtrPushLocals,
+            Op::PtrPopInto(2),
+            // first arg
+            Op::Const(99),
+            Op::PopInto(1),
+            // call func
+            Op::PtrPopLocals,
+            Op::Goto("func"),
+            Op::Label("after-func"),
+            Op::Halt,
         ])
         .collect::<Vec<_>>();
 
@@ -872,7 +927,7 @@ mod tests {
             // func
             Op::Label("invoke"),
             Op::Alloc(RecordSignature::new(1, 0)),
-            Op::SetLocals,
+            Op::PtrPopLocals,
             Op::PopLocal(0),
             Op::Const(42),
             Op::PushLocal(0),
