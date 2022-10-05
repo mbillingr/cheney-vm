@@ -33,8 +33,11 @@ macro_rules! strx {
     ($x:expr) => { $x.serialize() };
 }
 
+mod env;
 mod memory;
 pub mod simple_type_lang;
+mod str;
+pub mod tier02_vmlang;
 pub mod typelang;
 pub mod vm;
 pub mod vmlang;
