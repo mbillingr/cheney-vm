@@ -860,7 +860,7 @@ impl Compiler {
                 val_params.len() as Half,
                 ptr_params.len() as Half,
             )));
-            code.push(Op::PtrPopLocals);
+            code.push(Op::PtrPopEnv);
         }
 
         for pa in ptr_params.iter().rev() {
@@ -1176,7 +1176,7 @@ mod tests {
         );
 
         match &code[..] {
-            [Op::Goto(goto_end), Op::Label(label_def), Op::Alloc(rs), Op::PtrPopLocals, Op::PtrPopLocal(3), Op::PtrPopLocal(2), Op::PopLocal(1), Op::PopLocal(0), Op::Const(42), Op::Halt, Op::Label(label_end), Op::PushAddr(get_def)]
+            [Op::Goto(goto_end), Op::Label(label_def), Op::Alloc(rs), Op::PtrPopEnv, Op::PtrPopLocal(3), Op::PtrPopLocal(2), Op::PopLocal(1), Op::PopLocal(0), Op::Const(42), Op::Halt, Op::Label(label_end), Op::PushAddr(get_def)]
                 if goto_end == label_end
                     && get_def == label_def
                     && rs.n_primitive() == 2

@@ -24,8 +24,8 @@ pub enum Op<T> {
 
     Const(Int),
 
-    PtrPushLocals,
-    PtrPopLocals,
+    PtrPushEnv,
+    PtrPopEnv,
     PushLocal(Int),
     PopLocal(Int),
     PtrPushLocal(Int),
@@ -89,8 +89,8 @@ impl<T> Op<T> {
             Op::CallBuiltin(idx) => Op::CallBuiltin(*idx),
             Op::Alloc(s) => Op::Alloc(*s),
             Op::Const(x) => Op::Const(*x),
-            Op::PtrPushLocals => Op::PtrPushLocals,
-            Op::PtrPopLocals => Op::PtrPopLocals,
+            Op::PtrPushEnv => Op::PtrPushEnv,
+            Op::PtrPopEnv => Op::PtrPopEnv,
             Op::PushLocal(idx) => Op::PushLocal(*idx),
             Op::PopLocal(idx) => Op::PopLocal(*idx),
             Op::SetClosure => Op::SetClosure,
@@ -203,7 +203,7 @@ pub struct Vm<AC, GC> {
 
     val_stack: Vec<Int>,
     ptr_stack: Vec<Ptr>,
-    lcl: Ptr,
+    env: Ptr,
     cls: Ptr,
 
     builtins: Vec<BuiltinFunction<AC, GC>>,
@@ -224,7 +224,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             heap,
             val_stack: vec![],
             ptr_stack: vec![],
-            lcl: 0,
+            env: 0,
             cls: 0,
             builtins: vec![],
         }
@@ -289,14 +289,14 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                     self.ptr_stack.push(ptr);
                 }
                 Op::Const(x) => self.val_stack.push(x),
-                Op::PtrPushLocals => self.ptr_stack.push(self.lcl),
-                Op::PtrPopLocals => self.lcl = self.ptr_stack.pop().unwrap(),
-                Op::PushLocal(idx) => self.val_stack.push(self.get_ptr_offset(self.lcl, idx)),
+                Op::PtrPushEnv => self.ptr_stack.push(self.env),
+                Op::PtrPopEnv => self.env = self.ptr_stack.pop().unwrap(),
+                Op::PushLocal(idx) => self.val_stack.push(self.get_ptr_offset(self.env, idx)),
                 Op::PopLocal(idx) => {
                     let val = self.val_stack.pop().unwrap();
                     self.set_local(idx, val);
                 }
-                Op::PtrPushLocal(idx) => self.ptr_stack.push(self.get_ptr_offset(self.lcl, idx)),
+                Op::PtrPushLocal(idx) => self.ptr_stack.push(self.get_ptr_offset(self.env, idx)),
                 Op::PtrPopLocal(idx) => {
                     let val = self.ptr_stack.pop().unwrap();
                     self.set_local(idx, val);
@@ -351,7 +351,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
     }
 
     fn set_local(&mut self, offset: Int, val: Int) {
-        self.heap[self.lcl as usize + offset as usize] = val
+        self.heap[self.env as usize + offset as usize] = val
     }
 
     fn get_ptr_offset(&self, ptr: Int, offset: Int) -> Int {
@@ -387,11 +387,11 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
     }
 
     fn collect_garbage(&mut self) {
-        self.ptr_stack.push(self.lcl);
+        self.ptr_stack.push(self.env);
         self.ptr_stack.push(self.cls);
         self.gc.collect(&mut self.ptr_stack, &mut self.heap);
         self.cls = self.ptr_stack.pop().unwrap();
-        self.lcl = self.ptr_stack.pop().unwrap();
+        self.env = self.ptr_stack.pop().unwrap();
     }
 
     fn available_heap(&self) -> usize {
@@ -552,8 +552,8 @@ mod tests {
     #[test]
     fn test_push_local() {
         let mut vm = Vm::default();
-        vm.lcl = vm.alloc(3, 0);
-        vm.poke(vm.lcl, &[10, 11, 12]);
+        vm.env = vm.alloc(3, 0);
+        vm.poke(vm.env, &[10, 11, 12]);
 
         let res = vm.run(&[Op::PushLocal(1), Op::Halt]);
 
@@ -563,14 +563,14 @@ mod tests {
     #[test]
     fn test_pop_local() {
         let mut vm = Vm::default();
-        vm.lcl = vm.alloc(3, 0);
-        vm.poke(vm.lcl, &[10, 11, 12]);
+        vm.env = vm.alloc(3, 0);
+        vm.poke(vm.env, &[10, 11, 12]);
         vm.val_stack = vec![42];
 
         vm.run(&[Op::PopLocal(2), Op::Halt]);
 
         assert_eq!(vm.val_stack, []);
-        assert_eq!(vm.peek(vm.lcl), rec![10, 11, 42]);
+        assert_eq!(vm.peek(vm.env), rec![10, 11, 42]);
     }
 
     #[test]
@@ -602,10 +602,10 @@ mod tests {
     #[test]
     fn test_pointer_push_local() {
         let mut vm = Vm::default();
-        vm.lcl = vm.alloc(2, 1);
+        vm.env = vm.alloc(2, 1);
         let ptr = vm.alloc(1, 0);
         vm.poke(ptr, &[33]);
-        vm.poke(vm.lcl, &[11, 22, ptr]);
+        vm.poke(vm.env, &[11, 22, ptr]);
 
         vm.run(&[Op::PtrPushLocal(2), Op::Halt]);
 
@@ -615,14 +615,14 @@ mod tests {
     #[test]
     fn test_pointer_pop_local() {
         let mut vm = Vm::default();
-        vm.lcl = vm.alloc(2, 1);
+        vm.env = vm.alloc(2, 1);
         let ptr = vm.alloc(1, 0);
         vm.ptr_stack.push(ptr);
 
         vm.run(&[Op::PtrPopLocal(2), Op::Halt]);
 
         assert_eq!(vm.ptr_stack, []);
-        assert_eq!(vm.peek(vm.lcl), rec![0, 0, [0]]);
+        assert_eq!(vm.peek(vm.env), rec![0, 0, [0]]);
     }
 
     #[test]
@@ -897,7 +897,7 @@ mod tests {
             // return
             Op::PushLocal(0),
             Op::PtrPushLocal(2),
-            Op::PtrPopLocals,
+            Op::PtrPopEnv,
             Op::Jump,
             // main
             Op::Label("main"),
@@ -906,13 +906,13 @@ mod tests {
             Op::PushAddr("after-func"),
             Op::PopInto(0),
             // Current frame
-            Op::PtrPushLocals,
+            Op::PtrPushEnv,
             Op::PtrPopInto(2),
             // first arg
             Op::Const(99),
             Op::PopInto(1),
             // call func
-            Op::PtrPopLocals,
+            Op::PtrPopEnv,
             Op::Goto("func"),
             Op::Label("after-func"),
             Op::Halt,
@@ -939,7 +939,7 @@ mod tests {
             // func
             Op::Label("invoke"),
             Op::Alloc(RecordSignature::new(1, 0)),
-            Op::PtrPopLocals,
+            Op::PtrPopEnv,
             Op::PopLocal(0),
             Op::Const(42),
             Op::PushLocal(0),

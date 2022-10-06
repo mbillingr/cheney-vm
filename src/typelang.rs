@@ -191,7 +191,7 @@ fn compile_function(
             let (n_primitive, n_pointer, idxmap) =
                 map_types_to_record_indices(params.iter().map(|(_, t)| t));
             code.push(Op::Alloc(RecordSignature::new(n_primitive, n_pointer)));
-            code.push(Op::PtrPopLocals);
+            code.push(Op::PtrPopEnv);
             for ((_, t), idx) in params.iter().zip(idxmap).rev() {
                 match t {
                     Type::Record(_) => code.push(Op::PtrToVal),
