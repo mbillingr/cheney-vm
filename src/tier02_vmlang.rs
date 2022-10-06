@@ -1,5 +1,6 @@
 use crate::env::Environment;
 use crate::str::Str;
+use crate::vm::Op::PushAddr;
 use crate::vm::{Half, Int, Op, RecordSignature};
 use std::collections::HashMap;
 
@@ -12,6 +13,15 @@ pub enum Binding {
     LocalPtr(Int),
     ClosedVal(Int, Int),
     ClosedPtr(Int, Int),
+}
+
+#[derive(Debug)]
+struct Program(Vec<Definition>);
+
+#[derive(Debug)]
+enum Definition {
+    ValFunc(Str, Vec<Str>, Vec<Str>, ValExpr),
+    PtrFunc(Str, Vec<Str>, Vec<Str>, PtrExpr),
 }
 
 #[derive(Debug)]
@@ -39,6 +49,38 @@ enum PtrExpr {
 
 trait Compile {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<Str>>;
+}
+
+impl Compile for Program {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<Str>> {
+        let mut code = vec![
+            Op::push_addr("  halt  "),
+            Op::Const(0),
+            Op::ValToPtr,
+            Op::goto("main"),
+            Op::label("  halt  "),
+            Op::Halt,
+        ];
+
+        for def in &self.0 {
+            code.extend(def.compile(env, compiler));
+        }
+
+        code
+    }
+}
+
+impl Compile for Definition {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<Str>> {
+        match self {
+            Definition::ValFunc(name, vargs, pargs, body) => {
+                compiler.compile_function(name.clone(), vargs, pargs, body, env)
+            }
+            Definition::PtrFunc(name, vargs, pargs, body) => {
+                compiler.compile_function(name.clone(), vargs, pargs, body, env)
+            }
+        }
+    }
 }
 
 impl Compile for ValExpr {
@@ -301,11 +343,11 @@ impl Compiler {
 
     fn compile_epilogue(&mut self, retaddr_idx: Int, retenv_idx: Int) -> Vec<Op<Str>> {
         vec![
+            Op::comment("return to address"),
+            Op::PushLocal(retaddr_idx),
             Op::comment("restore previous env"),
             Op::PtrPushLocal(retenv_idx),
             Op::PtrPopEnv,
-            Op::comment("return to address"),
-            Op::PushLocal(retaddr_idx),
             Op::Jump,
         ]
     }
@@ -430,6 +472,19 @@ impl Env {
 macro_rules! vmlang {
     (($($x:tt)*)) => {
         vmlang!($($x)*)
+    };
+
+    (program $($def:tt)*) => {
+        $crate::tier02_vmlang::Program(vec![$(vmlang!($def)),*])
+    };
+
+    (define ($name:ident($($a:ident)*) ($($p:ident)*) -> val) $body:tt) => {
+        $crate::tier02_vmlang::Definition::ValFunc(
+            stringify!($name).into(),
+            vec![$(stringify!($a).into()),*],
+            vec![$(stringify!($p).into()),*],
+            vmlang!($body)
+        )
     };
 
     (null) => {
@@ -654,9 +709,9 @@ mod tests {
                     // body
                     Op::Const(123),
                     // epilogue
+                    Op::PushLocal(0),
                     Op::PtrPushLocal(1),
                     Op::PtrPopEnv,
-                    Op::PushLocal(0),
                     Op::Jump,
                     Op::label("after-lambda-1"),
                     Op::push_addr("lambda-1"),
@@ -688,9 +743,9 @@ mod tests {
                     // body
                     Op::PushLocal(2),
                     // epilogue
+                    Op::PushLocal(0),
                     Op::PtrPushLocal(6),
                     Op::PtrPopEnv,
-                    Op::PushLocal(0),
                     Op::Jump,
                     Op::label("after-lambda-1"),
                     Op::push_addr("lambda-1"),
@@ -722,9 +777,9 @@ mod tests {
                     // body
                     Op::PtrPushLocal(4),
                     // epilogue
+                    Op::PushLocal(0),
                     Op::PtrPushLocal(6),
                     Op::PtrPopEnv,
-                    Op::PushLocal(0),
                     Op::Jump,
                     Op::label("after-lambda-1"),
                     Op::push_addr("lambda-1"),
@@ -874,9 +929,9 @@ mod tests {
                     Op::PushFrom(1),
                     Op::PtrDrop(0),
                     // epilogue
+                    Op::PushLocal(0),
                     Op::PtrPushLocal(2),
                     Op::PtrPopEnv,
-                    Op::PushLocal(0),
                     Op::Jump,
                     Op::label("after-closure-1"),
                     // create closure
@@ -920,9 +975,9 @@ mod tests {
                     Op::PushFrom(1),
                     Op::PtrDrop(0),
                     // epilogue
+                    Op::PushLocal(0),
                     Op::PtrPushLocal(4),
                     Op::PtrPopEnv,
-                    Op::PushLocal(0),
                     Op::Jump,
                     Op::label("after-closure-1"),
                     // create closure
@@ -964,9 +1019,9 @@ mod tests {
                     Op::PtrPushFrom(2),
                     Op::PtrDrop(1),
                     // epilogue
+                    Op::PushLocal(0),
                     Op::PtrPushLocal(2),
                     Op::PtrPopEnv,
-                    Op::PushLocal(0),
                     Op::Jump,
                     Op::label("after-closure-1"),
                     // create closure
@@ -980,17 +1035,79 @@ mod tests {
                 ]
             )
         }
+
+        #[test]
+        fn compile_empty_program() {
+            assert_eq!(
+                vmlang!(program).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::push_addr("  halt  "),
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::goto("main"),
+                    Op::label("  halt  "),
+                    Op::Halt
+                ]
+            )
+        }
+
+        #[test]
+        fn compile_simple_program() {
+            assert_eq!(
+                strip_comments(
+                    &vmlang!(program (define (main () () -> val) 42))
+                        .compile(&Env::Empty, &mut Compiler::new())
+                )
+                .collect::<Vec<_>>(),
+                vec![
+                    Op::push_addr("  halt  "),
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::goto("main"),
+                    Op::label("  halt  "),
+                    Op::Halt,
+                    Op::label("main"),
+                    Op::Alloc(RecordSignature::new(1, 1)),
+                    Op::PtrPopEnv,
+                    Op::PtrPopLocal(1),
+                    Op::PopLocal(0),
+                    Op::Const(42),
+                    Op::PushLocal(0),
+                    Op::PtrPushLocal(1),
+                    Op::PtrPopEnv,
+                    Op::Jump,
+                ]
+            )
+        }
     }
 
     mod full_stack_tests {
+        use super::*;
+        use crate::vm::{transform_labels, Vm};
+
+        fn run(program: Program) -> Int {
+            let code = program.compile(&Env::Empty, &mut Compiler::new());
+            let code: Vec<_> = transform_labels(&code).collect();
+            Vm::default().run(&code)
+        }
+
+        #[test]
+        fn simple_program() {
+            assert_eq!(
+                run(vmlang!(program
+                    (define (main () () -> val) 42))),
+                42
+            );
+        }
+
         /*#[test]
         fn fib() {
             let mut code = vmlang!(program
                 (define (main () () -> val) (fib 5))
                 (define (fib (n) () -> val)
-                    (if (< n 2)
-                        (+ (fib (- n 1))
-                           (fib (- n 2)))))
+                    (if (< (val n) 2)
+                        (+ (fib (- (val n) 1))
+                           (fib (- (val n) 2)))))
             );
         }*/
     }
