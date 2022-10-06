@@ -18,6 +18,7 @@ pub enum Binding {
 enum ValExpr {
     Const(Int),
     Ref(Str),
+    If(Box<ValExpr>, Box<ValExpr>, Box<ValExpr>),
     CallFun(Box<ValExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     CallCls(Box<PtrExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     LambdaVal(Vec<Str>, Vec<Str>, Box<ValExpr>),
@@ -28,6 +29,7 @@ enum ValExpr {
 enum PtrExpr {
     Null,
     Ref(Str),
+    If(Box<ValExpr>, Box<PtrExpr>, Box<PtrExpr>),
     CallFun(Box<ValExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     CallCls(Box<PtrExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     ClosureVal(Vec<Str>, Vec<Str>, Vec<Str>, Vec<Str>, Box<ValExpr>),
@@ -53,6 +55,7 @@ impl Compile for ValExpr {
                     vec![Op::PtrPushLocal(*cls), Op::PushFrom(*idx), Op::PtrDrop(0)]
                 }
             },
+            ValExpr::If(a, b, c) => compiler.compile_if(a, &**b, &**c, env),
             ValExpr::CallFun(fun, vargs, pargs) => {
                 compiler.compile_function_call(fun, vargs, pargs, env)
             }
@@ -89,6 +92,7 @@ impl Compile for PtrExpr {
                     Op::PtrDrop(1),
                 ],
             },
+            PtrExpr::If(a, b, c) => compiler.compile_if(a, &**b, &**c, env),
             PtrExpr::CallFun(fun, vargs, pargs) => {
                 compiler.compile_function_call(fun, vargs, pargs, env)
             }
@@ -128,9 +132,29 @@ impl Compiler {
         format!("{name}-1").into()
     }
 
+    fn compile_if(
+        &mut self,
+        condition: &ValExpr,
+        consequence: &impl Compile,
+        alternative: &impl Compile,
+        env: &Env,
+    ) -> Vec<Op<Str>> {
+        let label = self.unique_label("");
+        let else_label = Str::from("else".to_string() + &label);
+        let endif_label = Str::from("endif".to_string() + &label);
+
+        let mut code = condition.compile(env, self);
+        code.push(Op::GoIfZero(else_label.clone()));
+        code.extend(consequence.compile(env, self));
+        code.extend([Op::Goto(endif_label.clone()), Op::Label(else_label)]);
+        code.extend(alternative.compile(env, self));
+        code.extend([Op::Label(endif_label)]);
+        code
+    }
+
     fn compile_function_call(
         &mut self,
-        fun: &Box<ValExpr>,
+        fun: &ValExpr,
         vargs: &Vec<ValExpr>,
         pargs: &Vec<PtrExpr>,
         env: &Env,
@@ -150,7 +174,7 @@ impl Compiler {
 
     fn compile_closure_call(
         &mut self,
-        cls: &Box<PtrExpr>,
+        cls: &PtrExpr,
         vargs: &Vec<ValExpr>,
         pargs: &Vec<PtrExpr>,
         env: &Env,
@@ -386,6 +410,22 @@ macro_rules! vmlang {
         $crate::tier02_vmlang::PtrExpr::Ref(stringify!($s).into())
     };
 
+    (val-if $a:tt $b:tt $c:tt) => {
+        $crate::tier02_vmlang::ValExpr::If(
+            Box::new(vmlang!($a)),
+            Box::new(vmlang!($b)),
+            Box::new(vmlang!($c))
+        )
+    };
+
+    (ptr-if $a:tt $b:tt $c:tt) => {
+        $crate::tier02_vmlang::PtrExpr::If(
+            Box::new(vmlang!($a)),
+            Box::new(vmlang!($b)),
+            Box::new(vmlang!($c))
+        )
+    };
+
     (lambda->val ($($a:ident)*) ($($p:ident)*) $body:tt) => {
         $crate::tier02_vmlang::ValExpr::LambdaVal(
             vec![$(stringify!($a).into()),*],
@@ -496,6 +536,40 @@ mod tests {
             assert_eq!(
                 vmlang!(42).compile(&Env::Empty, &mut Compiler::new()),
                 vec![Op::Const(42)]
+            )
+        }
+
+        #[test]
+        fn compile_val_if() {
+            assert_eq!(
+                vmlang!(val-if 0 1 2).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Const(0),
+                    Op::goto_zero("else-1"),
+                    Op::Const(1),
+                    Op::goto("endif-1"),
+                    Op::label("else-1"),
+                    Op::Const(2),
+                    Op::label("endif-1")
+                ]
+            )
+        }
+
+        #[test]
+        fn compile_ptr_if() {
+            assert_eq!(
+                vmlang!(ptr-if 0 null null).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Const(0),
+                    Op::goto_zero("else-1"),
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::goto("endif-1"),
+                    Op::label("else-1"),
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::label("endif-1")
+                ]
             )
         }
 
