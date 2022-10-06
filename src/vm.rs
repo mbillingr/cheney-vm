@@ -141,6 +141,7 @@ fn find_label_offsets<T: Eq + Hash>(code: &[Op<T>]) -> HashMap<&T, Int> {
     let mut labels = HashMap::new();
     for op in code {
         match op {
+            Op::Comment(_) => {}
             Op::Label(label) => {
                 labels.insert(label, offset);
             }
@@ -261,8 +262,8 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             let op = program[ip];
             ip += 1;
             /*println!(
-                "LCL: {:?}, VS: {:?}, PS: {:?}, next OP: {:?}",
-                self.peek(self.lcl),
+                "ENV: {:?}, VS: {:?}, PS: {:?}, next OP: {:?}",
+                self.peek(self.env),
                 self.val_stack,
                 self.ptr_stack
                     .iter()

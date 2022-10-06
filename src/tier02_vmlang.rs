@@ -1,7 +1,7 @@
 use crate::env::Environment;
 use crate::str::Str;
 use crate::vm::Op::PushAddr;
-use crate::vm::{Half, Int, Op, RecordSignature};
+use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm};
 use std::collections::HashMap;
 
 pub type Env = Environment<Binding>;
@@ -9,6 +9,7 @@ pub type Env = Environment<Binding>;
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Binding {
     Static,
+    Builtin(Int),
     LocalVal(Int),
     LocalPtr(Int),
     ClosedVal(Int, Int),
@@ -29,6 +30,7 @@ enum ValExpr {
     Const(Int),
     Ref(Str),
     If(Box<ValExpr>, Box<ValExpr>, Box<ValExpr>),
+    Builtin(Str, Vec<ValExpr>, Vec<PtrExpr>),
     CallFun(Box<ValExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     CallCls(Box<PtrExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     LambdaVal(Vec<Str>, Vec<Str>, Box<ValExpr>),
@@ -47,6 +49,15 @@ enum PtrExpr {
     ClosurePtr(Vec<Str>, Vec<Str>, Vec<Str>, Vec<Str>, Box<PtrExpr>),
 }
 
+impl Definition {
+    pub fn name(&self) -> &Str {
+        match self {
+            Definition::ValFunc(name, _, _, _) => name,
+            Definition::PtrFunc(name, _, _, _) => name,
+        }
+    }
+}
+
 trait Compile {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<Str>>;
 }
@@ -62,8 +73,14 @@ impl Compile for Program {
             Op::Halt,
         ];
 
+        let mut env = env.clone();
+
         for def in &self.0 {
-            code.extend(def.compile(env, compiler));
+            env = env.assoc(def.name(), Binding::Static);
+        }
+
+        for def in &self.0 {
+            code.extend(def.compile(&env, compiler));
         }
 
         code
@@ -89,6 +106,7 @@ impl Compile for ValExpr {
             ValExpr::Const(c) => vec![Op::Const(*c)],
             ValExpr::Ref(ident) => match env.lookup(ident) {
                 None => panic!("Unbound identifier: {ident}"),
+                Some(Binding::Builtin(_)) => panic!("Can't dereference builtin {ident}"),
                 Some(Binding::Static) => vec![Op::PushAddr(ident.clone())],
                 Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
                 Some(Binding::LocalPtr(_) | Binding::ClosedPtr(_, _)) => {
@@ -99,6 +117,9 @@ impl Compile for ValExpr {
                 }
             },
             ValExpr::If(a, b, c) => compiler.compile_if(a, &**b, &**c, env),
+            ValExpr::Builtin(op, vargs, pargs) => {
+                compiler.compile_builtin_call(op, vargs, pargs, env)
+            }
             ValExpr::CallFun(fun, vargs, pargs) => {
                 compiler.compile_function_call(fun, vargs, pargs, env)
             }
@@ -124,6 +145,7 @@ impl Compile for PtrExpr {
             PtrExpr::Null => vec![Op::Const(0), Op::ValToPtr],
             PtrExpr::Ref(ident) => match env.lookup(ident) {
                 None => panic!("Unbound identifier: {ident}"),
+                Some(Binding::Builtin(_)) => panic!("Can't dereference builtin {ident}"),
                 Some(Binding::Static) => todo!("static pointers??"),
                 Some(Binding::LocalVal(_) | Binding::ClosedVal(_, _)) => {
                     panic!("expected pointer, but {ident} is a value")
@@ -168,11 +190,11 @@ impl Compiler {
     }
 
     fn unique_label(&mut self, name: &str) -> Str {
-        /*if let Some(n) = self.unique_counters.get_mut(name) {
+        if let Some(n) = self.unique_counters.get_mut(name) {
             *n += 1;
-            return format!("{name}-{n}").into()
+            return format!("{name}-{n}").into();
         }
-        todo!()*/
+        self.unique_counters.insert(name.into(), 1);
         format!("{name}-1").into()
     }
 
@@ -207,6 +229,29 @@ impl Compiler {
             pargs.len() as Half,
         ))];
         code.extend(self.compile_fill_record(0, vargs.iter(), pargs.iter(), env));
+        code
+    }
+
+    fn compile_builtin_call(
+        &mut self,
+        op: &Str,
+        vargs: &Vec<ValExpr>,
+        pargs: &Vec<PtrExpr>,
+        env: &Env,
+    ) -> Vec<Op<Str>> {
+        let mut code = vec![];
+        for va in vargs {
+            code.extend(va.compile(env, self));
+        }
+        for pa in pargs {
+            code.extend(pa.compile(env, self));
+        }
+        let idx = match env.lookup(op) {
+            None => panic!("unbound identifier: {op}"),
+            Some(Binding::Builtin(idx)) => *idx,
+            Some(_) => panic!("not a builtin operation: {op}"),
+        };
+        code.extend([Op::CallBuiltin(idx)]);
         code
     }
 
@@ -463,10 +508,42 @@ impl Env {
                     | Binding::ClosedVal(_, _),
                     next,
                 ) => next.without_locals(),
-                (name, b @ Binding::Static, next) => next.without_locals().assoc(name, *b),
+                (name, b @ (Binding::Static | Binding::Builtin(_)), next) => {
+                    next.without_locals().assoc(name, *b)
+                }
             },
         }
     }
+}
+
+const BUILTIN_LT: Int = 0;
+const BUILTIN_ADD: Int = 1;
+const BUILTIN_SUB: Int = 2;
+const BUILTIN_MUL: Int = 3;
+
+fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
+    vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
+        if ctx.pop_val() > ctx.pop_val() {
+            Int::MAX
+        } else {
+            0
+        }
+    });
+    vm.register_builtin(BUILTIN_ADD, "+", |mut ctx| ctx.pop_val() + ctx.pop_val());
+    vm.register_builtin(BUILTIN_SUB, "-", |mut ctx| {
+        let b = ctx.pop_val();
+        ctx.pop_val() - b
+    });
+    vm.register_builtin(BUILTIN_MUL, "*", |mut ctx| ctx.pop_val() * ctx.pop_val());
+}
+
+fn builtin_env() -> Env {
+    let mut env = Env::Empty;
+    env = env.assoc("<", Binding::Builtin(BUILTIN_LT));
+    env = env.assoc("+", Binding::Builtin(BUILTIN_ADD));
+    env = env.assoc("-", Binding::Builtin(BUILTIN_SUB));
+    env = env.assoc("*", Binding::Builtin(BUILTIN_MUL));
+    env
 }
 
 macro_rules! vmlang {
@@ -601,6 +678,14 @@ macro_rules! vmlang {
     (cls->ptr $f:tt ($($va:tt)*) ($($pa:tt)*)) => {
         $crate::tier02_vmlang::PtrExpr::CallCls(
             Box::new(vmlang!($f)),
+            vec![$(vmlang!($va)),*],
+            vec![$(vmlang!($pa)),*]
+        )
+    };
+
+    ($op:tt ($($va:tt)*) ($($pa:tt)*)) => {
+        $crate::tier02_vmlang::ValExpr::Builtin(
+            Str::from(stringify!($op)),
             vec![$(vmlang!($va)),*],
             vec![$(vmlang!($pa)),*]
         )
@@ -861,6 +946,30 @@ mod tests {
         }
 
         #[test]
+        fn compile_pass_call_result_to_call() {
+            assert_eq!(
+                vmlang!(fun->val foo ((fun->val bar () ())) ()).compile(
+                    &Env::Empty
+                        .assoc("foo", Binding::Static)
+                        .assoc("bar", Binding::Static),
+                    &mut Compiler::new()
+                ),
+                vec![
+                    Op::push_addr("return-1"),
+                    Op::push_addr("return-2"),
+                    Op::push_addr("bar"),
+                    Op::PtrPushEnv,
+                    Op::Jump,
+                    Op::label("return-2"),
+                    Op::push_addr("foo"),
+                    Op::PtrPushEnv,
+                    Op::Jump,
+                    Op::label("return-1"),
+                ]
+            )
+        }
+
+        #[test]
         fn compile_call_val_closure() {
             assert_eq!(
                 vmlang!(cls->val bar () ()).compile(
@@ -1083,12 +1192,17 @@ mod tests {
 
     mod full_stack_tests {
         use super::*;
-        use crate::vm::{transform_labels, Vm};
+        use crate::vm::{strip_comments, transform_labels, Vm};
 
         fn run(program: Program) -> Int {
-            let code = program.compile(&Env::Empty, &mut Compiler::new());
+            let code = program.compile(&builtin_env(), &mut Compiler::new());
+            for op in &code {
+                println!("{op:?}");
+            }
             let code: Vec<_> = transform_labels(&code).collect();
-            Vm::default().run(&code)
+            let mut vm = Vm::default();
+            register_builtins(&mut vm);
+            vm.run(&code)
         }
 
         #[test]
@@ -1100,15 +1214,40 @@ mod tests {
             );
         }
 
-        /*#[test]
-        fn fib() {
-            let mut code = vmlang!(program
-                (define (main () () -> val) (fib 5))
-                (define (fib (n) () -> val)
-                    (if (< (val n) 2)
-                        (+ (fib (- (val n) 1))
-                           (fib (- (val n) 2)))))
+        #[test]
+        fn multiple_calls() {
+            assert_eq!(
+                run(vmlang!(program
+                    (define (main () () -> val) (fun->val foo () ()))
+                    (define (foo () () -> val) 42)
+                )),
+                42
             );
-        }*/
+        }
+
+        #[test]
+        fn add_numbers() {
+            assert_eq!(
+                run(vmlang!(program
+                    (define (main () () -> val) (+ (1 2) ())))),
+                3
+            );
+        }
+
+        #[test]
+        fn fibonacci() {
+            assert_eq!(
+                run(vmlang!(program
+                    (define (main () () -> val) (fun->val fib (5) ()))
+                    (define (fib (n) () -> val)
+                        (val-if (< ((val n) 2) ())
+                            1
+                            (+ ((fun->val fib ((- ((val n) 1)())) ())
+                                (fun->val fib ((- ((val n) 2)())) ()))
+                               ())))
+                )),
+                8
+            );
+        }
     }
 }
