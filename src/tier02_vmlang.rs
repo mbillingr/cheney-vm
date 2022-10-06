@@ -29,6 +29,7 @@ enum ValExpr {
 enum PtrExpr {
     Null,
     Ref(Str),
+    Record(Vec<ValExpr>, Vec<PtrExpr>),
     If(Box<ValExpr>, Box<PtrExpr>, Box<PtrExpr>),
     CallFun(Box<ValExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     CallCls(Box<PtrExpr>, Vec<ValExpr>, Vec<PtrExpr>),
@@ -92,6 +93,7 @@ impl Compile for PtrExpr {
                     Op::PtrDrop(1),
                 ],
             },
+            PtrExpr::Record(vargs, pargs) => compiler.compile_record(vargs, pargs, env),
             PtrExpr::If(a, b, c) => compiler.compile_if(a, &**b, &**c, env),
             PtrExpr::CallFun(fun, vargs, pargs) => {
                 compiler.compile_function_call(fun, vargs, pargs, env)
@@ -149,6 +151,20 @@ impl Compiler {
         code.extend([Op::Goto(endif_label.clone()), Op::Label(else_label)]);
         code.extend(alternative.compile(env, self));
         code.extend([Op::Label(endif_label)]);
+        code
+    }
+
+    fn compile_record(
+        &mut self,
+        vargs: &Vec<ValExpr>,
+        pargs: &Vec<PtrExpr>,
+        env: &Env,
+    ) -> Vec<Op<Str>> {
+        let mut code = vec![Op::Alloc(RecordSignature::new(
+            vargs.len() as Half,
+            pargs.len() as Half,
+        ))];
+        code.extend(self.compile_fill_record(0, vargs.iter(), pargs.iter(), env));
         code
     }
 
@@ -330,14 +346,32 @@ impl Compiler {
             Op::PopInto(0),
         ]);
 
-        let mut idx = 1;
-        for vf in vfree {
-            code.extend(ValExpr::Ref(vf.clone()).compile(env, self));
+        code.extend(self.compile_fill_record(
+            1,
+            vfree.iter().cloned().map(ValExpr::Ref),
+            pfree.iter().cloned().map(PtrExpr::Ref),
+            env,
+        ));
+
+        code
+    }
+
+    fn compile_fill_record<V: std::borrow::Borrow<ValExpr>, P: std::borrow::Borrow<PtrExpr>>(
+        &mut self,
+        mut idx: Int,
+        vals: impl Iterator<Item = V>,
+        ptrs: impl Iterator<Item = P>,
+        env: &Env,
+    ) -> Vec<Op<Str>> {
+        let mut code = vec![];
+
+        for v in vals {
+            code.extend(v.borrow().compile(env, self));
             code.push(Op::PopInto(idx));
             idx += 1;
         }
-        for pf in pfree {
-            code.extend(PtrExpr::Ref(pf.clone()).compile(env, self));
+        for p in ptrs {
+            code.extend(p.borrow().compile(env, self));
             code.push(Op::PtrPopInto(idx));
             idx += 1;
         }
@@ -408,6 +442,13 @@ macro_rules! vmlang {
 
     (ptr $s:ident) => {
         $crate::tier02_vmlang::PtrExpr::Ref(stringify!($s).into())
+    };
+
+    (record ($($v:tt)*) ($($p:tt)*)) => {
+        $crate::tier02_vmlang::PtrExpr::Record(
+            vec![$(vmlang!($v)),*],
+            vec![$(vmlang!($p)),*]
+        )
     };
 
     (val-if $a:tt $b:tt $c:tt) => {
@@ -569,6 +610,28 @@ mod tests {
                     Op::Const(0),
                     Op::ValToPtr,
                     Op::label("endif-1")
+                ]
+            )
+        }
+
+        #[test]
+        fn compile_record() {
+            assert_eq!(
+                vmlang!(record (1 2) (null (record (3) ())))
+                    .compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Alloc(RecordSignature::new(2, 2)),
+                    Op::Const(1),
+                    Op::PopInto(0),
+                    Op::Const(2),
+                    Op::PopInto(1),
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::PtrPopInto(2),
+                    Op::Alloc(RecordSignature::new(1, 0)),
+                    Op::Const(3),
+                    Op::PopInto(0),
+                    Op::PtrPopInto(3)
                 ]
             )
         }
