@@ -55,6 +55,9 @@ pub enum Op<T> {
 }
 
 impl<T> Op<T> {
+    pub fn comment(text: impl Into<T>) -> Self {
+        Self::Comment(text.into())
+    }
     pub fn label(label: impl Into<T>) -> Self {
         Self::Label(label.into())
     }
@@ -110,6 +113,15 @@ impl<T> Op<T> {
             Op::ValToPtr => Op::ValToPtr,
         }
     }
+}
+
+pub fn strip_comments<T: Clone>(code: &[Op<T>]) -> impl Iterator<Item = Op<T>> + '_ {
+    code.iter()
+        .filter(|op| match op {
+            Op::Comment(_) => false,
+            _ => true,
+        })
+        .cloned()
 }
 
 pub fn transform_labels<T: Eq + Hash>(code: &[Op<T>]) -> impl Iterator<Item = Op<Int>> + '_ {
