@@ -17,6 +17,13 @@ macro_rules! boxvec {
 }
 
 #[macro_export]
+macro_rules! intovec {
+    ($($x:expr),*) => {
+        vec![$($x.into()),*]
+    }
+}
+
+#[macro_export]
 macro_rules! join {
     () => { vec![] };
     ($x:expr) => { $x };
@@ -42,6 +49,7 @@ mod memory;
 //pub mod simple_type_lang;
 mod str;
 pub mod tier02_vmlang;
+pub mod tier03_types;
 //pub mod typelang;
 pub mod vm;
 //pub mod vmlang;

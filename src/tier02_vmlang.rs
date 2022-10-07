@@ -15,16 +15,16 @@ pub enum Binding {
     ClosedPtr(Int, Int),
 }
 
-#[derive(Debug)]
-pub struct Program(Vec<Definition>);
+#[derive(Debug, Eq, PartialEq)]
+pub struct Program(pub Vec<Definition>);
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Definition {
     ValFunc(Str, Vec<Str>, Vec<Str>, ValExpr),
     PtrFunc(Str, Vec<Str>, Vec<Str>, PtrExpr),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Statement {
     SetValField(ValExpr, PtrExpr, ValExpr),
     SetPtrField(ValExpr, PtrExpr, PtrExpr),
@@ -32,7 +32,7 @@ pub enum Statement {
     DropPtr(PtrExpr),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ValExpr {
     Const(Int),
     Ref(Str),
@@ -46,7 +46,7 @@ pub enum ValExpr {
     Sequence(Box<Statement>, Box<ValExpr>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum PtrExpr {
     Null,
     Ref(Str),
@@ -877,7 +877,7 @@ macro_rules! vmlang {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     mod unit_tests {
@@ -1457,11 +1457,12 @@ mod tests {
         }
     }
 
-    mod full_stack_tests {
+    pub mod full_stack_tests {
         use super::*;
         use crate::vm::{transform_labels, Vm};
 
-        fn run(program: Program) -> Int {
+        pub fn run(program: Program) -> Int {
+            println!("T2: {program:?}");
             let code = program.compile(&builtin_env(), &mut Compiler::new());
             for op in &code {
                 println!("{op:?}");
