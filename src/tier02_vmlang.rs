@@ -26,9 +26,16 @@ enum Definition {
 }
 
 #[derive(Debug)]
+enum Statement {
+    SetValField(Box<ValExpr>, Box<PtrExpr>, Box<ValExpr>),
+    SetPtrField(Box<ValExpr>, Box<PtrExpr>, Box<PtrExpr>),
+}
+
+#[derive(Debug)]
 enum ValExpr {
     Const(Int),
     Ref(Str),
+    GetField(Box<ValExpr>, Box<PtrExpr>),
     If(Box<ValExpr>, Box<ValExpr>, Box<ValExpr>),
     Builtin(Str, Vec<ValExpr>, Vec<PtrExpr>),
     CallFun(Box<ValExpr>, Vec<ValExpr>, Vec<PtrExpr>),
@@ -42,6 +49,7 @@ enum PtrExpr {
     Null,
     Ref(Str),
     Record(Vec<ValExpr>, Vec<PtrExpr>),
+    GetField(Box<ValExpr>, Box<PtrExpr>),
     If(Box<ValExpr>, Box<PtrExpr>, Box<PtrExpr>),
     CallFun(Box<ValExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     CallCls(Box<PtrExpr>, Vec<ValExpr>, Vec<PtrExpr>),
@@ -100,6 +108,30 @@ impl Compile for Definition {
     }
 }
 
+impl Compile for Statement {
+    fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<Str>> {
+        match self {
+            Statement::SetValField(idx, rec, val) => {
+                join!(
+                    rec.compile(env, compiler),
+                    val.compile(env, compiler),
+                    idx.compile(env, compiler),
+                    [Op::PopFromDyn, Op::PtrDrop(0)]
+                )
+            }
+            Statement::SetPtrField(idx, rec, val) => {
+                join!(
+                    rec.compile(env, compiler),
+                    val.compile(env, compiler),
+                    idx.compile(env, compiler),
+                    [Op::PtrPopFromDyn, Op::PtrDrop(0)]
+                )
+            }
+            x => todo!("{x:?}"),
+        }
+    }
+}
+
 impl Compile for ValExpr {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<Str>> {
         match self {
@@ -116,6 +148,13 @@ impl Compile for ValExpr {
                     vec![Op::PtrPushLocal(*cls), Op::PushFrom(*idx), Op::PtrDrop(0)]
                 }
             },
+            ValExpr::GetField(idx, rec) => {
+                join!(
+                    rec.compile(env, compiler),
+                    idx.compile(env, compiler),
+                    [Op::PushFromDyn, Op::PtrDrop(0)]
+                )
+            }
             ValExpr::If(a, b, c) => compiler.compile_if(a, &**b, &**c, env),
             ValExpr::Builtin(op, vargs, pargs) => {
                 compiler.compile_builtin_call(op, vargs, pargs, env)
@@ -158,6 +197,13 @@ impl Compile for PtrExpr {
                 ],
             },
             PtrExpr::Record(vargs, pargs) => compiler.compile_record(vargs, pargs, env),
+            PtrExpr::GetField(idx, rec) => {
+                join!(
+                    rec.compile(env, compiler),
+                    idx.compile(env, compiler),
+                    [Op::PtrPushFromDyn, Op::PtrDrop(1)]
+                )
+            }
             PtrExpr::If(a, b, c) => compiler.compile_if(a, &**b, &**c, env),
             PtrExpr::CallFun(fun, vargs, pargs) => {
                 compiler.compile_function_call(fun, vargs, pargs, env)
@@ -592,6 +638,36 @@ macro_rules! vmlang {
         )
     };
 
+    (get-val $idx:tt $rec:tt) => {
+        $crate::tier02_vmlang::ValExpr::GetField(
+            Box::new(vmlang!($idx)),
+            Box::new(vmlang!($rec))
+        )
+    };
+
+    (get-ptr $idx:tt $rec:tt) => {
+        $crate::tier02_vmlang::PtrExpr::GetField(
+            Box::new(vmlang!($idx)),
+            Box::new(vmlang!($rec))
+        )
+    };
+
+    (set-val! $idx:tt $rec:tt $val:tt) => {
+        $crate::tier02_vmlang::Statement::SetValField(
+            Box::new(vmlang!($idx)),
+            Box::new(vmlang!($rec)),
+            Box::new(vmlang!($val))
+        )
+    };
+
+    (set-ptr! $idx:tt $rec:tt $val:tt) => {
+        $crate::tier02_vmlang::Statement::SetPtrField(
+            Box::new(vmlang!($idx)),
+            Box::new(vmlang!($rec)),
+            Box::new(vmlang!($val))
+        )
+    };
+
     (val-if $a:tt $b:tt $c:tt) => {
         $crate::tier02_vmlang::ValExpr::If(
             Box::new(vmlang!($a)),
@@ -781,6 +857,65 @@ mod tests {
                     Op::Const(3),
                     Op::PopInto(0),
                     Op::PtrPopInto(3)
+                ]
+            )
+        }
+
+        #[test]
+        fn compile_get_valfield() {
+            assert_eq!(
+                vmlang!(get-val 99 null).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::Const(99),
+                    Op::PushFromDyn,
+                    Op::PtrDrop(0),
+                ]
+            )
+        }
+
+        #[test]
+        fn compile_get_ptrfield() {
+            assert_eq!(
+                vmlang!(get-ptr 5 null).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::Const(5),
+                    Op::PtrPushFromDyn,
+                    Op::PtrDrop(1),
+                ]
+            )
+        }
+
+        #[test]
+        fn compile_set_valfield() {
+            assert_eq!(
+                vmlang!(set-val! 99 null 42).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::Const(42),
+                    Op::Const(99),
+                    Op::PopFromDyn,
+                    Op::PtrDrop(0),
+                ]
+            )
+        }
+
+        #[test]
+        fn compile_set_ptrfield() {
+            assert_eq!(
+                vmlang!(set-ptr! 99 null null).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::Const(99),
+                    Op::PtrPopFromDyn,
+                    Op::PtrDrop(0),
                 ]
             )
         }

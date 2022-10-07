@@ -42,6 +42,8 @@ pub enum Op<T> {
 
     PushFromDyn,
     PtrPushFromDyn,
+    PopFromDyn,
+    PtrPopFromDyn,
 
     DupVal,
 
@@ -104,6 +106,8 @@ impl<T> Op<T> {
             Op::PtrPopInto(idx) => Op::PtrPopInto(*idx),
             Op::PushFromDyn => Op::PushFromDyn,
             Op::PtrPushFromDyn => Op::PtrPushFromDyn,
+            Op::PopFromDyn => Op::PopFromDyn,
+            Op::PtrPopFromDyn => Op::PtrPopFromDyn,
             Op::DupVal => Op::DupVal,
             Op::PtrDup => Op::PtrDup,
             Op::PtrDrop(i) => Op::PtrDrop(*i),
@@ -322,6 +326,16 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::PtrPushFromDyn => {
                     let idx = self.val_stack.pop().unwrap();
                     self.ptr_stack.push(self.get_field(idx));
+                }
+                Op::PopFromDyn => {
+                    let idx = self.val_stack.pop().unwrap();
+                    let val = self.val_stack.pop().unwrap();
+                    self.set_field(idx, val);
+                }
+                Op::PtrPopFromDyn => {
+                    let idx = self.val_stack.pop().unwrap();
+                    let val = self.ptr_stack.pop().unwrap();
+                    self.set_field(idx, val);
                 }
                 Op::DupVal => {
                     let val = self.val_stack.pop().unwrap();
