@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+#[macro_export]
 macro_rules! mark {
     ($trait:path: $($t:ty),*) => {
         $(
@@ -8,12 +9,14 @@ macro_rules! mark {
     }
 }
 
+#[macro_export]
 macro_rules! boxvec {
     ($($x:expr),*) => {
         vec![$(Box::new($x)),*]
     }
 }
 
+#[macro_export]
 macro_rules! join {
     () => { vec![] };
     ($x:expr) => { $x };
@@ -28,6 +31,7 @@ macro_rules! join {
     };
 }
 
+#[macro_export]
 macro_rules! strx {
     (( $($x:expr),* $(,)? )) => { $crate::StrStruct::List(vec![$(strx!($x)),*]) };
     ($x:expr) => { $x.serialize() };
@@ -35,12 +39,12 @@ macro_rules! strx {
 
 mod env;
 mod memory;
-pub mod simple_type_lang;
+//pub mod simple_type_lang;
 mod str;
 pub mod tier02_vmlang;
-pub mod typelang;
+//pub mod typelang;
 pub mod vm;
-pub mod vmlang;
+//pub mod vmlang;
 
 pub trait Serialize {
     fn serialize(&self) -> StrStruct;

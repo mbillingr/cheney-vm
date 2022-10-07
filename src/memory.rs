@@ -141,7 +141,7 @@ impl<T: GarbageCollector> GarbageCollector for ChattyCollector<T> {
         let capacity = heap.capacity();
         let freed = used_before - heap.len();
         let available = capacity - heap.len();
-        println!("GC -- Heap size: {capacity}, {used_after} used, {freed} collected");
+        println!("GC -- Heap size: {capacity}, {available} available, {used_after} used, {freed} collected");
     }
 }
 

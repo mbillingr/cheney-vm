@@ -462,64 +462,64 @@ pub trait GarbageCollector: Debug {
     fn collect(&self, roots: &mut [Ptr], heap: &mut Vec<Int>);
 }
 
-impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
-    fn peek(&self, ptr: Int) -> Val {
-        let mut ptr = ptr as usize;
-        if ptr == 0 {
-            return Val::Rec(vec![]);
-        }
-        let rs = RecordSignature::from_int(self.heap[ptr - 1]);
-        let mut data = Vec::with_capacity(rs.size());
-
-        for _ in 0..rs.n_primitive() {
-            data.push(Val::Int(self.heap[ptr]));
-            ptr += 1;
-        }
-
-        for _ in 0..rs.n_pointer() {
-            data.push(self.peek(self.heap[ptr]));
-            ptr += 1;
-        }
-
-        Val::Rec(data)
-    }
-
-    fn poke(&mut self, ptr: Int, data: &[Int]) {
-        let ptr = ptr as usize;
-        let rs = RecordSignature::from_int(self.heap[ptr - 1]);
-        assert!(data.len() <= rs.size());
-        self.heap[ptr..ptr + data.len()].copy_from_slice(data);
-    }
-}
-
-#[derive(Eq, PartialEq)]
-enum Val {
-    Int(Int),
-    Rec(Vec<Val>),
-}
-
-impl Debug for Val {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Val::Int(x) => x.fmt(f),
-            Val::Rec(xs) => {
-                write!(f, "[")?;
-                let mut xs = xs.iter();
-                if let Some(x) = xs.next() {
-                    x.fmt(f)?;
-                }
-                for x in xs {
-                    write!(f, ", {:?}", x)?;
-                }
-                write!(f, "]")
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
+        fn peek(&self, ptr: Int) -> Val {
+            let mut ptr = ptr as usize;
+            if ptr == 0 {
+                return Val::Rec(vec![]);
+            }
+            let rs = RecordSignature::from_int(self.heap[ptr - 1]);
+            let mut data = Vec::with_capacity(rs.size());
+
+            for _ in 0..rs.n_primitive() {
+                data.push(Val::Int(self.heap[ptr]));
+                ptr += 1;
+            }
+
+            for _ in 0..rs.n_pointer() {
+                data.push(self.peek(self.heap[ptr]));
+                ptr += 1;
+            }
+
+            Val::Rec(data)
+        }
+
+        fn poke(&mut self, ptr: Int, data: &[Int]) {
+            let ptr = ptr as usize;
+            let rs = RecordSignature::from_int(self.heap[ptr - 1]);
+            assert!(data.len() <= rs.size());
+            self.heap[ptr..ptr + data.len()].copy_from_slice(data);
+        }
+    }
+
+    #[derive(Eq, PartialEq)]
+    enum Val {
+        Int(Int),
+        Rec(Vec<Val>),
+    }
+
+    impl Debug for Val {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Val::Int(x) => x.fmt(f),
+                Val::Rec(xs) => {
+                    write!(f, "[")?;
+                    let mut xs = xs.iter();
+                    if let Some(x) = xs.next() {
+                        x.fmt(f)?;
+                    }
+                    for x in xs {
+                        write!(f, ", {:?}", x)?;
+                    }
+                    write!(f, "]")
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_transform_string_labels_to_offsets() {

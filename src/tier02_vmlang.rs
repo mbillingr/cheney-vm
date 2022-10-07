@@ -1,6 +1,5 @@
 use crate::env::Environment;
 use crate::str::Str;
-use crate::vm::Op::PushAddr;
 use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm};
 use std::collections::HashMap;
 
@@ -17,22 +16,22 @@ pub enum Binding {
 }
 
 #[derive(Debug)]
-struct Program(Vec<Definition>);
+pub struct Program(Vec<Definition>);
 
 #[derive(Debug)]
-enum Definition {
+pub enum Definition {
     ValFunc(Str, Vec<Str>, Vec<Str>, ValExpr),
     PtrFunc(Str, Vec<Str>, Vec<Str>, PtrExpr),
 }
 
 #[derive(Debug)]
-enum Statement {
+pub enum Statement {
     SetValField(Box<ValExpr>, Box<PtrExpr>, Box<ValExpr>),
     SetPtrField(Box<ValExpr>, Box<PtrExpr>, Box<PtrExpr>),
 }
 
 #[derive(Debug)]
-enum ValExpr {
+pub enum ValExpr {
     Const(Int),
     Ref(Str),
     GetField(Box<ValExpr>, Box<PtrExpr>),
@@ -45,7 +44,7 @@ enum ValExpr {
 }
 
 #[derive(Debug)]
-enum PtrExpr {
+pub enum PtrExpr {
     Null,
     Ref(Str),
     Record(Vec<ValExpr>, Vec<PtrExpr>),
@@ -127,7 +126,6 @@ impl Compile for Statement {
                     [Op::PtrPopFromDyn, Op::PtrDrop(0)]
                 )
             }
-            x => todo!("{x:?}"),
         }
     }
 }
@@ -173,7 +171,6 @@ impl Compile for ValExpr {
                 let name = compiler.unique_label("lambda");
                 compiler.compile_inline_function(name, vargs, pargs, &**body, env)
             }
-            x => todo!("{x:?}"),
         }
     }
 }
@@ -219,7 +216,6 @@ impl Compile for PtrExpr {
                 let name = compiler.unique_label("closure");
                 compiler.compile_closure(name, vfree, pfree, vargs, pargs, &**body, env)
             }
-            x => todo!("{x:?}"),
         }
     }
 }
@@ -567,7 +563,7 @@ const BUILTIN_ADD: Int = 1;
 const BUILTIN_SUB: Int = 2;
 const BUILTIN_MUL: Int = 3;
 
-fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
+pub fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
     vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
         if ctx.pop_val() > ctx.pop_val() {
             Int::MAX
@@ -583,7 +579,7 @@ fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
     vm.register_builtin(BUILTIN_MUL, "*", |mut ctx| ctx.pop_val() * ctx.pop_val());
 }
 
-fn builtin_env() -> Env {
+pub fn builtin_env() -> Env {
     let mut env = Env::Empty;
     env = env.assoc("<", Binding::Builtin(BUILTIN_LT));
     env = env.assoc("+", Binding::Builtin(BUILTIN_ADD));
@@ -592,6 +588,7 @@ fn builtin_env() -> Env {
     env
 }
 
+#[macro_export]
 macro_rules! vmlang {
     (($($x:tt)*)) => {
         vmlang!($($x)*)
@@ -1336,7 +1333,7 @@ mod tests {
 
     mod full_stack_tests {
         use super::*;
-        use crate::vm::{strip_comments, transform_labels, Vm};
+        use crate::vm::{transform_labels, Vm};
 
         fn run(program: Program) -> Int {
             let code = program.compile(&builtin_env(), &mut Compiler::new());
