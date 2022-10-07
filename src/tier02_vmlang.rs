@@ -564,6 +564,15 @@ macro_rules! vmlang {
         )
     };
 
+    (define ($name:ident($($a:ident)*) ($($p:ident)*) -> ptr) $body:tt) => {
+        $crate::tier02_vmlang::Definition::PtrFunc(
+            stringify!($name).into(),
+            vec![$(stringify!($a).into()),*],
+            vec![$(stringify!($p).into()),*],
+            vmlang!($body)
+        )
+    };
+
     (null) => {
         $crate::tier02_vmlang::PtrExpr::Null
     };
@@ -1231,6 +1240,19 @@ mod tests {
                 run(vmlang!(program
                     (define (main () () -> val) (+ (1 2) ())))),
                 3
+            );
+        }
+
+        #[test]
+        fn closure() {
+            assert_eq!(
+                run(vmlang!(program
+                    (define (main () () -> val)
+                        (cls->val (fun->ptr store (123) ()) () ()))
+                    (define (store (n) () -> ptr)
+                        (closure->val (n) () () () (val n)))
+                )),
+                123
             );
         }
 
