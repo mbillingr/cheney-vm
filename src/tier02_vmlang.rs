@@ -26,8 +26,10 @@ pub enum Definition {
 
 #[derive(Debug)]
 pub enum Statement {
-    SetValField(Box<ValExpr>, Box<PtrExpr>, Box<ValExpr>),
-    SetPtrField(Box<ValExpr>, Box<PtrExpr>, Box<PtrExpr>),
+    SetValField(ValExpr, PtrExpr, ValExpr),
+    SetPtrField(ValExpr, PtrExpr, PtrExpr),
+    DropVal(ValExpr),
+    DropPtr(PtrExpr),
 }
 
 #[derive(Debug)]
@@ -41,6 +43,7 @@ pub enum ValExpr {
     CallCls(Box<PtrExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     LambdaVal(Vec<Str>, Vec<Str>, Box<ValExpr>),
     LambdaPtr(Vec<Str>, Vec<Str>, Box<PtrExpr>),
+    Sequence(Box<Statement>, Box<ValExpr>),
 }
 
 #[derive(Debug)]
@@ -54,6 +57,7 @@ pub enum PtrExpr {
     CallCls(Box<PtrExpr>, Vec<ValExpr>, Vec<PtrExpr>),
     ClosureVal(Vec<Str>, Vec<Str>, Vec<Str>, Vec<Str>, Box<ValExpr>),
     ClosurePtr(Vec<Str>, Vec<Str>, Vec<Str>, Vec<Str>, Box<PtrExpr>),
+    Sequence(Box<Statement>, Box<PtrExpr>),
 }
 
 impl Definition {
@@ -62,6 +66,18 @@ impl Definition {
             Definition::ValFunc(name, _, _, _) => name,
             Definition::PtrFunc(name, _, _, _) => name,
         }
+    }
+}
+
+impl From<ValExpr> for Box<Statement> {
+    fn from(x: ValExpr) -> Self {
+        Box::new(Statement::DropVal(x))
+    }
+}
+
+impl From<PtrExpr> for Box<Statement> {
+    fn from(x: PtrExpr) -> Self {
+        Box::new(Statement::DropPtr(x))
     }
 }
 
@@ -138,6 +154,8 @@ impl Compile for Statement {
                     [Op::PtrPopFromDyn, Op::PtrDrop(0)]
                 )
             }
+            Statement::DropVal(val) => join!(val.compile(env, compiler), [Op::Drop(0)]),
+            Statement::DropPtr(ptr) => join!(ptr.compile(env, compiler), [Op::PtrDrop(0)]),
         }
     }
 }
@@ -198,6 +216,9 @@ impl Compile for ValExpr {
                     &**body,
                     env,
                 )
+            }
+            ValExpr::Sequence(first, next) => {
+                join!(first.compile(env, compiler), next.compile(env, compiler))
             }
         }
     }
@@ -267,6 +288,9 @@ impl Compile for PtrExpr {
                     &**body,
                     env,
                 )
+            }
+            PtrExpr::Sequence(first, next) => {
+                join!(first.compile(env, compiler), next.compile(env, compiler))
             }
         }
     }
@@ -676,6 +700,28 @@ macro_rules! vmlang {
         )
     };
 
+    (begin-val $x:tt) => {
+        vmlang!($x)
+    };
+
+    (begin-val $x:tt $($rest:tt)+) => {
+        $crate::tier02_vmlang::ValExpr::Sequence(
+            vmlang!($x).into(),
+            Box::new(vmlang!(begin-val $($rest)+))
+        )
+    };
+
+    (begin-ptr $x:tt) => {
+        vmlang!($x)
+    };
+
+    (begin-ptr $x:tt $($rest:tt)+) => {
+        $crate::tier02_vmlang::PtrExpr::Sequence(
+            vmlang!($x).into(),
+            Box::new(vmlang!(begin-ptr $($rest)+))
+        )
+    };
+
     (null) => {
         $crate::tier02_vmlang::PtrExpr::Null
     };
@@ -710,19 +756,11 @@ macro_rules! vmlang {
     };
 
     (set-val! $idx:tt $rec:tt $val:tt) => {
-        $crate::tier02_vmlang::Statement::SetValField(
-            Box::new(vmlang!($idx)),
-            Box::new(vmlang!($rec)),
-            Box::new(vmlang!($val))
-        )
+        $crate::tier02_vmlang::Statement::SetValField(vmlang!($idx), vmlang!($rec), vmlang!($val))
     };
 
     (set-ptr! $idx:tt $rec:tt $val:tt) => {
-        $crate::tier02_vmlang::Statement::SetPtrField(
-            Box::new(vmlang!($idx)),
-            Box::new(vmlang!($rec)),
-            Box::new(vmlang!($val))
-        )
+        $crate::tier02_vmlang::Statement::SetPtrField(vmlang!($idx), vmlang!($rec), vmlang!($val))
     };
 
     (val-if $a:tt $b:tt $c:tt) => {
@@ -1347,6 +1385,34 @@ mod tests {
         }
 
         #[test]
+        fn compile_val_sequence() {
+            assert_eq!(
+                vmlang!(begin-val 1 2 3).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Const(1),
+                    Op::Drop(0),
+                    Op::Const(2),
+                    Op::Drop(0),
+                    Op::Const(3),
+                ]
+            )
+        }
+
+        #[test]
+        fn compile_ptr_sequence() {
+            assert_eq!(
+                vmlang!(begin-ptr null null).compile(&Env::Empty, &mut Compiler::new()),
+                vec![
+                    Op::Const(0),
+                    Op::ValToPtr,
+                    Op::PtrDrop(0),
+                    Op::Const(0),
+                    Op::ValToPtr,
+                ]
+            )
+        }
+
+        #[test]
         fn compile_empty_program() {
             assert_eq!(
                 vmlang!(program).compile(&Env::Empty, &mut Compiler::new()),
@@ -1461,6 +1527,28 @@ mod tests {
                                ())))
                 )),
                 8
+            );
+        }
+
+        #[test]
+        fn side_effects() {
+            assert_eq!(
+                run(vmlang!(program
+                    (define (main () () -> val)
+                        // pass new record to foo
+                        (fun->val foo () ((record (0) ()))))
+                    (define (foo () (rec) -> val)
+                        // call bar with rec and return first field of rec
+                        (begin-val
+                            (fun->val bar () ((ptr rec)))
+                            (get-val 0 (ptr rec))))
+                    (define (bar () (rec) -> val)
+                        // set first field of rec and return arbitrary number
+                        (begin-val
+                            (set-val! 0 (ptr rec) 42)
+                            123))
+                )),
+                42
             );
         }
     }
