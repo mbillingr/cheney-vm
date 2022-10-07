@@ -75,10 +75,7 @@ impl<T> Op<T> {
     }
 
     pub fn is_label(&self) -> bool {
-        match self {
-            Op::Label(_) => true,
-            _ => false,
-        }
+        matches!(self, Op::Label(_))
     }
 
     fn convert<U>(&self) -> Op<U> {
@@ -121,10 +118,7 @@ impl<T> Op<T> {
 
 pub fn strip_comments<T: Clone>(code: &[Op<T>]) -> impl Iterator<Item = Op<T>> + '_ {
     code.iter()
-        .filter(|op| match op {
-            Op::Comment(_) => false,
-            _ => true,
-        })
+        .filter(|op| !matches!(op, Op::Comment(_)))
         .cloned()
 }
 

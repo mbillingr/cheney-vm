@@ -97,12 +97,24 @@ impl Compile for Program {
 impl Compile for Definition {
     fn compile(&self, env: &Env, compiler: &mut Compiler) -> Vec<Op<Str>> {
         match self {
-            Definition::ValFunc(name, vargs, pargs, body) => {
-                compiler.compile_function(name.clone(), vargs, pargs, body, env)
-            }
-            Definition::PtrFunc(name, vargs, pargs, body) => {
-                compiler.compile_function(name.clone(), vargs, pargs, body, env)
-            }
+            Definition::ValFunc(name, vargs, pargs, body) => compiler.compile_function(
+                name.clone(),
+                ParamPair {
+                    vals: vargs,
+                    ptrs: pargs,
+                },
+                body,
+                env,
+            ),
+            Definition::PtrFunc(name, vargs, pargs, body) => compiler.compile_function(
+                name.clone(),
+                ParamPair {
+                    vals: vargs,
+                    ptrs: pargs,
+                },
+                body,
+                env,
+            ),
         }
     }
 }
@@ -165,11 +177,27 @@ impl Compile for ValExpr {
             }
             ValExpr::LambdaVal(vargs, pargs, body) => {
                 let name = compiler.unique_label("lambda");
-                compiler.compile_inline_function(name, vargs, pargs, &**body, env)
+                compiler.compile_inline_function(
+                    name,
+                    ParamPair {
+                        vals: vargs,
+                        ptrs: pargs,
+                    },
+                    &**body,
+                    env,
+                )
             }
             ValExpr::LambdaPtr(vargs, pargs, body) => {
                 let name = compiler.unique_label("lambda");
-                compiler.compile_inline_function(name, vargs, pargs, &**body, env)
+                compiler.compile_inline_function(
+                    name,
+                    ParamPair {
+                        vals: vargs,
+                        ptrs: pargs,
+                    },
+                    &**body,
+                    env,
+                )
             }
         }
     }
@@ -210,11 +238,35 @@ impl Compile for PtrExpr {
             }
             PtrExpr::ClosureVal(vfree, pfree, vargs, pargs, body) => {
                 let name = compiler.unique_label("closure");
-                compiler.compile_closure(name, vfree, pfree, vargs, pargs, &**body, env)
+                compiler.compile_closure(
+                    name,
+                    ParamPair {
+                        vals: vfree,
+                        ptrs: pfree,
+                    },
+                    ParamPair {
+                        vals: vargs,
+                        ptrs: pargs,
+                    },
+                    &**body,
+                    env,
+                )
             }
             PtrExpr::ClosurePtr(vfree, pfree, vargs, pargs, body) => {
                 let name = compiler.unique_label("closure");
-                compiler.compile_closure(name, vfree, pfree, vargs, pargs, &**body, env)
+                compiler.compile_closure(
+                    name,
+                    ParamPair {
+                        vals: vfree,
+                        ptrs: pfree,
+                    },
+                    ParamPair {
+                        vals: vargs,
+                        ptrs: pargs,
+                    },
+                    &**body,
+                    env,
+                )
             }
         }
     }
@@ -222,6 +274,12 @@ impl Compile for PtrExpr {
 
 pub struct Compiler {
     unique_counters: HashMap<Str, u64>,
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Compiler {
@@ -345,14 +403,13 @@ impl Compiler {
     fn compile_inline_function(
         &mut self,
         name: Str,
-        vargs: &[Str],
-        pargs: &[Str],
+        args: ParamPair,
         body: &impl Compile,
         env: &Env,
     ) -> Vec<Op<Str>> {
         let continue_execution = Str::from("after-".to_string() + &name);
         let mut code = vec![Op::goto(continue_execution.clone())];
-        code.extend(self.compile_function(name.clone(), vargs, pargs, body, env));
+        code.extend(self.compile_function(name.clone(), args, body, env));
         code.extend([Op::label(continue_execution), Op::push_addr(name)]);
         code
     }
@@ -360,18 +417,17 @@ impl Compiler {
     fn compile_function(
         &mut self,
         name: Str,
-        vargs: &[Str],
-        pargs: &[Str],
+        args: ParamPair,
         body: &impl Compile,
         env: &Env,
     ) -> Vec<Op<Str>> {
-        let local_env = env.without_locals().extend_local(vargs, pargs);
+        let local_env = env.without_locals().extend_local(args);
 
         let mut code = vec![Op::Label(name)];
 
-        code.extend(self.compile_prologue(vargs.len(), pargs.len()));
+        code.extend(self.compile_prologue(args.vals.len(), args.ptrs.len()));
         code.extend(body.compile(&local_env, self));
-        code.extend(self.compile_epilogue(0, (vargs.len() + pargs.len() + 1) as Int));
+        code.extend(self.compile_epilogue(0, (args.vals.len() + args.ptrs.len() + 1) as Int));
 
         code
     }
@@ -442,17 +498,15 @@ impl Compiler {
     fn compile_closure(
         &mut self,
         name: Str,
-        vfree: &[Str],
-        pfree: &[Str],
-        vargs: &[Str],
-        pargs: &[Str],
+        free: ParamPair,
+        args: ParamPair,
         body: &impl Compile,
         env: &Env,
     ) -> Vec<Op<Str>> {
-        let cls_idx = (vargs.len() + 1 + pargs.len()) as Int;
+        let cls_idx = (args.vals.len() + 1 + args.ptrs.len()) as Int;
         let global_env = env.without_locals();
-        let closure_env = global_env.extend_closed(vfree, pfree, cls_idx);
-        let local_env = closure_env.extend_local(vargs, pargs);
+        let closure_env = global_env.extend_closed(free, cls_idx);
+        let local_env = closure_env.extend_local(args);
 
         let continue_execution = Str::from("after-".to_string() + &name);
 
@@ -461,15 +515,15 @@ impl Compiler {
             Op::Label(name.clone()),
         ];
 
-        code.extend(self.compile_closure_prologue(vargs.len(), pargs.len()));
+        code.extend(self.compile_closure_prologue(args.vals.len(), args.ptrs.len()));
         code.extend(body.compile(&local_env, self));
-        code.extend(self.compile_epilogue(0, (vargs.len() + pargs.len() + 2) as Int));
+        code.extend(self.compile_epilogue(0, (args.vals.len() + args.ptrs.len() + 2) as Int));
 
         code.extend([
             Op::label(continue_execution),
             Op::Alloc(RecordSignature::new(
-                (vfree.len() + 1) as Half,
-                pfree.len() as Half,
+                (free.vals.len() + 1) as Half,
+                free.ptrs.len() as Half,
             )),
             Op::PushAddr(name),
             Op::PopInto(0),
@@ -477,8 +531,8 @@ impl Compiler {
 
         code.extend(self.compile_fill_record(
             1,
-            vfree.iter().cloned().map(ValExpr::Ref),
-            pfree.iter().cloned().map(PtrExpr::Ref),
+            free.vals.iter().cloned().map(ValExpr::Ref),
+            free.ptrs.iter().cloned().map(PtrExpr::Ref),
             env,
         ));
 
@@ -509,29 +563,35 @@ impl Compiler {
     }
 }
 
+#[derive(Copy, Clone)]
+struct ParamPair<'a> {
+    vals: &'a [Str],
+    ptrs: &'a [Str],
+}
+
 impl Env {
-    fn extend_local(&self, vargs: &[Str], pargs: &[Str]) -> Env {
+    fn extend_local(&self, args: ParamPair) -> Env {
         let mut env = self.clone();
         let mut idx = 1;
-        for va in vargs.iter().cloned() {
+        for va in args.vals.iter().cloned() {
             env = env.assoc(va, Binding::LocalVal(idx));
             idx += 1;
         }
-        for pa in pargs.iter().cloned() {
+        for pa in args.ptrs.iter().cloned() {
             env = env.assoc(pa, Binding::LocalPtr(idx));
             idx += 1;
         }
         env
     }
 
-    fn extend_closed(&self, vfree: &[Str], pfree: &[Str], cls_idx: Int) -> Env {
+    fn extend_closed(&self, free: ParamPair, cls_idx: Int) -> Env {
         let mut env = self.clone();
         let mut idx = 1;
-        for va in vfree.iter().cloned() {
+        for va in free.vals.iter().cloned() {
             env = env.assoc(va, Binding::ClosedVal(cls_idx, idx));
             idx += 1;
         }
-        for pa in pfree.iter().cloned() {
+        for pa in free.ptrs.iter().cloned() {
             env = env.assoc(pa, Binding::ClosedPtr(cls_idx, idx));
             idx += 1;
         }
