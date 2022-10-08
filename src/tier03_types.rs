@@ -124,7 +124,7 @@ impl FunctionType {
 pub enum Expression {
     Null,
     Const(Int),
-    Record(Vec<Expression>, Vec<Type>),
+    Record(Vec<Expression>),
     Ref(Str),
     If(Box<Expression>, Box<Expression>, Box<Expression>),
     Call(Box<Expression>, Vec<Expression>),
@@ -211,10 +211,10 @@ impl Expression {
         match self {
             Expression::Null => assert!(t.is_pointer(env)),
             Expression::Const(_) => Type::assert_equal(t, &Type::Value, env),
-            Expression::Record(xs, ts) => {
-                Type::assert_equal(t, &Type::Record(RecordType { fields: ts.clone() }), env);
-                check_expressions(xs, ts, env);
-            }
+            Expression::Record(xs) => match t.resolve(env) {
+                Some(Type::Record(RecordType { fields })) => check_expressions(xs, fields, env),
+                _ => panic!("{self:?} is not a {t:?}"),
+            },
             Expression::Ref(ident) => Type::assert_equal(env.lookup(ident).unwrap(), t, env),
             Expression::If(c, a, b) => {
                 c.check(&Type::Value, env);
@@ -258,7 +258,9 @@ impl Expression {
             Expression::Null => panic!("can't infer type of Null"),
             Expression::Const(_) => Type::Value,
             Expression::Ref(ident) => env.lookup(ident).unwrap().clone(),
-            Expression::Record(_, ts) => Type::Record(RecordType { fields: ts.clone() }),
+            Expression::Record(args) => Type::Record(RecordType {
+                fields: args.iter().map(|a| a.infer(env)).collect(),
+            }),
             Expression::If(c, a, b) => {
                 c.check(&Type::Value, env);
                 let t = a.infer(env);
@@ -296,7 +298,7 @@ impl Expression {
             Expression::Ref(ident) => {
                 HashMap::from([(ident.clone(), env.lookup(ident).unwrap().clone())])
             }
-            Expression::Record(args, _) => free_vars(args, env),
+            Expression::Record(args) => free_vars(args, env),
             Expression::If(c, a, b) => free_vars(&[&**a, &**b, &**c], env),
             Expression::Call(func, args) => {
                 let mut fv = free_vars(args, env);
@@ -376,8 +378,9 @@ impl Expression {
     fn to_ptrexpr(&self, env: &Env) -> t2::PtrExpr {
         match self {
             Expression::Null => t2::PtrExpr::Null,
-            Expression::Record(xs, ts) => {
-                let (vargs, pargs) = distribute(xs, ts, env);
+            Expression::Record(xs) => {
+                let arg_types: Vec<_> = xs.iter().map(|x| x.infer(env)).collect();
+                let (vargs, pargs) = distribute(xs, &arg_types, env);
                 let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                 let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                 t2::PtrExpr::Record(vargs, pargs)
@@ -562,14 +565,11 @@ mod tests {
                 fields: vec![empty.clone(), Type::Value, Type::Value],
             }),
             param_types: vec![Type::Value, empty.clone(), Type::Value],
-            body: Expression::Record(
-                vec![
-                    Expression::Ref("b".into()),
-                    Expression::Ref("a".into()),
-                    Expression::Ref("c".into()),
-                ],
-                vec![empty.clone(), Type::Value, Type::Value],
-            ),
+            body: Expression::Record(vec![
+                Expression::Ref("b".into()),
+                Expression::Ref("a".into()),
+                Expression::Ref("c".into()),
+            ]),
         };
 
         let env = Env::Empty;
@@ -721,10 +721,10 @@ mod tests {
             params: vec!["car".into(), "cdr".into()],
             param_types: vec![Type::Value, Type::Named("List".into())],
             return_type: Type::Named("List".into()),
-            body: Expression::Record(
-                vec![Expression::Ref("car".into()), Expression::Ref("cdr".into())],
-                vec![Type::Value, Type::Named("List".into())],
-            ),
+            body: Expression::Record(vec![
+                Expression::Ref("car".into()),
+                Expression::Ref("cdr".into()),
+            ]),
         };
 
         println!("{:?}", consdef.check(&env));
