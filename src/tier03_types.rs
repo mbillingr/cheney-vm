@@ -4,8 +4,9 @@ use crate::tier02_vmlang as t2;
 use crate::vm::Int;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::Hash;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Type {
     Empty,
     Value,
@@ -13,41 +14,115 @@ pub enum Type {
     Builtin(FunctionType),
     Function(FunctionType),
     Closure(FunctionType, HashMap<Str, Type>),
+    Named(Str),
 }
 
 impl Type {
-    fn is_value(&self) -> bool {
+    fn is_value(&self, env: &Env) -> bool {
         match self {
             Type::Value | Type::Function(_) => true,
             Type::Record(_) | Type::Closure(_, _) => false,
             Type::Builtin(_) => false,
             Type::Empty => false,
+            n @ Type::Named(_) => n.resolve(env).unwrap().is_value(env),
         }
     }
 
-    fn is_pointer(&self) -> bool {
+    fn is_pointer(&self, env: &Env) -> bool {
         match self {
             Type::Value | Type::Function(_) => false,
             Type::Record(_) | Type::Closure(_, _) => true,
             Type::Builtin(_) => false,
             Type::Empty => false,
+            n @ Type::Named(_) => n.resolve(env).unwrap().is_pointer(env),
         }
+    }
+
+    fn resolve<'a>(&'a self, env: &'a Env) -> Option<&'a Type> {
+        // todo: return None instead of infinite recursion
+        match self {
+            Type::Named(name) => env.lookup(name).and_then(|t| t.resolve(env)),
+            _ => Some(self),
+        }
+    }
+
+    fn assert_equal(a: &Type, b: &Type, env: &Env) {
+        if !Type::equal(a, b, env) {
+            panic!("Not equal:\n  {a:?}\n  {b:?}")
+        }
+    }
+
+    fn equal(a: &Type, b: &Type, env: &Env) -> bool {
+        use Type::*;
+        match (a, b) {
+            (Empty, Empty) => true,
+            (Value, Value) => true,
+            (Record(a), Record(b)) => a.equal(b, env),
+            (Builtin(a), Builtin(b)) => a.equal(b, env),
+            (Function(a), Function(b)) => a.equal(b, env),
+            (Closure(a, x), Closure(b, y)) => a.equal(b, env) && Self::closure_equal(x, y, env),
+            (Named(a), Named(b)) => a == b,
+            (a @ Named(_), b) => Type::equal(a.resolve(env).unwrap(), b, env),
+            (a, b @ Named(_)) => Type::equal(a, b.resolve(env).unwrap(), env),
+            _ => false,
+        }
+    }
+
+    fn closure_equal(x: &HashMap<Str, Type>, y: &HashMap<Str, Type>, env: &Env) -> bool {
+        if x.len() != y.len() {
+            return false;
+        }
+        for (a, ta) in x {
+            match y.get(a) {
+                None => return false,
+                Some(tb) => {
+                    if !Type::equal(ta, tb, env) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct RecordType {
     fields: Vec<Type>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+impl RecordType {
+    fn equal(&self, other: &Self, env: &Env) -> bool {
+        self.fields.len() == other.fields.len()
+            && self
+                .fields
+                .iter()
+                .zip(&other.fields)
+                .all(|(a, b)| Type::equal(a, b, env))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct FunctionType {
     ptypes: Vec<Type>,
     returns: Box<Type>,
 }
 
+impl FunctionType {
+    fn equal(&self, other: &Self, env: &Env) -> bool {
+        self.ptypes.len() == other.ptypes.len()
+            && Type::equal(&self.returns, &other.returns, env)
+            && self
+                .ptypes
+                .iter()
+                .zip(&other.ptypes)
+                .all(|(a, b)| Type::equal(a, b, env))
+    }
+}
+
 #[derive(Debug)]
 pub enum Expression {
+    Null,
     Const(Int),
     Record(Vec<Expression>, Vec<Type>),
     Ref(Str),
@@ -97,32 +172,34 @@ impl FunctionDefinition {
         let local_env = self.extend(env);
         self.body.check(&self.return_type, &local_env);
 
-        let (vparams, pparams) = distribute(&self.params, &self.param_types);
+        let (vparams, pparams) = distribute(&self.params, &self.param_types, env);
         let vparams = vparams.cloned().collect();
         let pparams = pparams.cloned().collect();
 
-        match &self.return_type {
-            Type::Empty => todo!("Wanna support without return type? Not sure how..."),
-            Type::Builtin(_) => unimplemented!("No first-class builtins"),
-            Type::Value | Type::Function(_) => t2::Definition::ValFunc(
+        match self.return_type.resolve(env) {
+            None => panic!("Unresolvable type return type {:?}", self.return_type),
+            Some(Type::Empty) => todo!("Wanna support without return type? Not sure how..."),
+            Some(Type::Builtin(_)) => unimplemented!("No first-class builtins"),
+            Some(Type::Value | Type::Function(_)) => t2::Definition::ValFunc(
                 self.name.clone(),
                 vparams,
                 pparams,
                 self.body.to_valexpr(&local_env),
             ),
-            Type::Record(_) | Type::Closure(_, _) => t2::Definition::PtrFunc(
+            Some(Type::Record(_) | Type::Closure(_, _)) => t2::Definition::PtrFunc(
                 self.name.clone(),
                 vparams,
                 pparams,
                 self.body.to_ptrexpr(&local_env),
             ),
+            Some(Type::Named(_)) => unreachable!(),
         }
     }
 
     fn extend(&self, env: &Env) -> Env {
         let mut local_env = env.clone();
         for (p, t) in self.params.iter().zip(&self.param_types) {
-            assert_ne!(t, &Type::Empty);
+            assert!(!Type::equal(t, &Type::Empty, env));
             local_env = local_env.assoc(p.clone(), t.clone());
         }
         local_env
@@ -132,12 +209,13 @@ impl FunctionDefinition {
 impl Expression {
     fn check(&self, t: &Type, env: &Env) {
         match self {
-            Expression::Const(_) => assert_eq!(t, &Type::Value),
+            Expression::Null => assert!(t.is_pointer(env)),
+            Expression::Const(_) => Type::assert_equal(t, &Type::Value, env),
             Expression::Record(xs, ts) => {
-                assert_eq!(t, &Type::Record(RecordType { fields: ts.clone() }));
+                Type::assert_equal(t, &Type::Record(RecordType { fields: ts.clone() }), env);
                 check_expressions(xs, ts, env);
             }
-            Expression::Ref(ident) => assert_eq!(env.lookup(ident), Some(t)),
+            Expression::Ref(ident) => Type::assert_equal(env.lookup(ident).unwrap(), t, env),
             Expression::If(c, a, b) => {
                 c.check(&Type::Value, env);
                 a.check(t, env);
@@ -162,12 +240,14 @@ impl Expression {
                     }) => (params, returns),
                     t => panic!("can't call expression of type {t:?}"),
                 };
-                assert_eq!(&*returns, t);
+                Type::assert_equal(&*returns, t, env);
                 check_expressions(args, &params, env);
             }
-            Expression::Lambda(_, _, _) => assert_eq!(t, &self.infer(env)),
+            Expression::Lambda(_, _, _) => Type::assert_equal(t, &self.infer(env), env),
             Expression::GetField(idx, rec) => match rec.infer(env) {
-                Type::Record(RecordType { fields }) => assert_eq!(&fields[*idx as usize], t),
+                Type::Record(RecordType { fields }) => {
+                    Type::assert_equal(&fields[*idx as usize], t, env)
+                }
                 o => panic!("expected record type, but got {o:?}"),
             },
         }
@@ -175,6 +255,7 @@ impl Expression {
 
     fn infer(&self, env: &Env) -> Type {
         match self {
+            Expression::Null => panic!("can't infer type of Null"),
             Expression::Const(_) => Type::Value,
             Expression::Ref(ident) => env.lookup(ident).unwrap().clone(),
             Expression::Record(_, ts) => Type::Record(RecordType { fields: ts.clone() }),
@@ -211,7 +292,7 @@ impl Expression {
 
     fn free_vars(&self, env: &Env) -> HashMap<Str, Type> {
         match self {
-            Expression::Const(_) => HashMap::new(),
+            Expression::Null | Expression::Const(_) => HashMap::new(),
             Expression::Ref(ident) => {
                 HashMap::from([(ident.clone(), env.lookup(ident).unwrap().clone())])
             }
@@ -246,19 +327,19 @@ impl Expression {
                 let ft = func.infer(env);
                 match ft {
                     Type::Function(FunctionType { ptypes, .. }) => {
-                        let (vargs, pargs) = distribute(args, &ptypes);
+                        let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                         t2::ValExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs)
                     }
                     Type::Closure(FunctionType { ptypes, .. }, _) => {
-                        let (vargs, pargs) = distribute(args, &ptypes);
+                        let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                         t2::ValExpr::CallCls(Box::new(func.to_ptrexpr(env)), vargs, pargs)
                     }
                     Type::Builtin(FunctionType { ptypes, .. }) => {
-                        let (vargs, pargs) = distribute(args, &ptypes);
+                        let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
 
@@ -272,14 +353,14 @@ impl Expression {
                 }
             }
             Expression::Lambda(params, ptypes, body) => {
-                let local_env = env.extend(params, ptypes);
-
-                let (vparams, pparams) = distribute(params, ptypes);
+                let (vparams, pparams) = distribute(params, ptypes, env);
                 let vparams = vparams.cloned().collect();
                 let pparams = pparams.cloned().collect();
 
+                let local_env = env.extend(params, ptypes);
+
                 match body.infer(env) {
-                    rt if rt.is_value() => t2::ValExpr::LambdaVal(
+                    rt if rt.is_value(&local_env) => t2::ValExpr::LambdaVal(
                         vparams,
                         pparams,
                         Box::new(body.to_valexpr(&local_env)),
@@ -294,8 +375,9 @@ impl Expression {
 
     fn to_ptrexpr(&self, env: &Env) -> t2::PtrExpr {
         match self {
+            Expression::Null => t2::PtrExpr::Null,
             Expression::Record(xs, ts) => {
-                let (vargs, pargs) = distribute(xs, ts);
+                let (vargs, pargs) = distribute(xs, ts, env);
                 let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                 let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                 t2::PtrExpr::Record(vargs, pargs)
@@ -310,13 +392,13 @@ impl Expression {
                 let ft = func.infer(env);
                 match ft {
                     Type::Function(FunctionType { ptypes, .. }) => {
-                        let (vargs, pargs) = distribute(args, &ptypes);
+                        let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                         t2::PtrExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs)
                     }
                     Type::Closure(FunctionType { ptypes, .. }, _) => {
-                        let (vargs, pargs) = distribute(args, &ptypes);
+                        let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                         t2::PtrExpr::CallCls(Box::new(func.to_ptrexpr(env)), vargs, pargs)
@@ -325,22 +407,22 @@ impl Expression {
                 }
             }
             Expression::Lambda(params, ptypes, body) => {
-                let local_env = env.extend(params, ptypes);
-
                 let free_vars = self.free_vars(env);
                 let frees = free_vars.keys().cloned().collect::<Vec<_>>();
                 let ftypes = free_vars.values().cloned().collect::<Vec<_>>();
 
-                let (vfree, pfree) = distribute(&frees, &ftypes);
+                let (vfree, pfree) = distribute(&frees, &ftypes, env);
                 let vfree = vfree.cloned().collect();
                 let pfree = pfree.cloned().collect();
 
-                let (vparams, pparams) = distribute(params, ptypes);
+                let (vparams, pparams) = distribute(params, ptypes, env);
                 let vparams = vparams.cloned().collect();
                 let pparams = pparams.cloned().collect();
 
-                match body.infer(env) {
-                    rt if rt.is_value() => t2::PtrExpr::ClosureVal(
+                let local_env = env.extend(params, ptypes);
+
+                match body.infer(&local_env) {
+                    rt if rt.is_value(&local_env) => t2::PtrExpr::ClosureVal(
                         vfree,
                         pfree,
                         vparams,
@@ -359,17 +441,18 @@ impl Expression {
 fn distribute<'a, T>(
     things: &'a [T],
     types: &'a [Type],
+    env: &'a Env,
 ) -> (impl Iterator<Item = &'a T>, impl Iterator<Item = &'a T>) {
     assert_eq!(things.len(), types.len());
     let vals = things
         .iter()
         .zip(types)
-        .filter(|(_, t)| t.is_value())
+        .filter(|(_, t)| t.is_value(env))
         .map(|(x, _)| x);
     let ptrs = things
         .iter()
         .zip(types)
-        .filter(|(_, t)| t.is_pointer())
+        .filter(|(_, t)| t.is_pointer(env))
         .map(|(x, _)| x);
     (vals, ptrs)
 }
@@ -413,6 +496,60 @@ mod tests {
         println!("T3: {program:?}");
         let env = builtin_env();
         tier02_vmlang::tests::full_stack_tests::run(program.check(&env))
+    }
+
+    #[test]
+    fn structurally_same_types_are_equal() {
+        use Type::*;
+        Type::assert_equal(&Empty, &Empty, &Env::Empty);
+        Type::assert_equal(&Value, &Value, &Env::Empty);
+        Type::assert_equal(
+            &Record(RecordType { fields: vec![] }),
+            &Record(RecordType { fields: vec![] }),
+            &Env::Empty,
+        );
+        Type::assert_equal(
+            &Record(RecordType {
+                fields: vec![Value],
+            }),
+            &Record(RecordType {
+                fields: vec![Value],
+            }),
+            &Env::Empty,
+        );
+    }
+
+    #[test]
+    fn structurally_different_types_are_not_equal() {
+        use Type::*;
+        assert!(!Type::equal(&Empty, &Value, &Env::Empty));
+        assert!(!Type::equal(
+            &Record(RecordType {
+                fields: vec![Value]
+            }),
+            &Record(RecordType { fields: vec![] }),
+            &Env::Empty
+        ));
+        assert!(!Type::equal(
+            &Record(RecordType {
+                fields: vec![Empty]
+            }),
+            &Record(RecordType {
+                fields: vec![Value]
+            }),
+            &Env::Empty
+        ));
+    }
+
+    #[test]
+    fn named_types_equality_based_on_name() {
+        use Type::*;
+        Type::assert_equal(&Named("Foo".into()), &Named("Foo".into()), &Env::Empty);
+        assert!(!Type::equal(
+            &Named("Foo".into()),
+            &Named("Bar".into()),
+            &Env::Empty
+        ));
     }
 
     #[test]
@@ -555,5 +692,53 @@ mod tests {
         ]);
 
         assert_eq!(run(&prog), 13);
+    }
+
+    #[test]
+    fn list_type() {
+        let env = Env::Empty.assoc(
+            "List",
+            Type::Record(RecordType {
+                fields: vec![Type::Value, Type::Named("List".into())],
+            }),
+        );
+
+        let nildef = FunctionDefinition {
+            name: "nil".into(),
+            params: vec![],
+            param_types: vec![],
+            return_type: Type::Named("List".into()),
+            body: Expression::Null,
+        };
+
+        assert_eq!(
+            nildef.check(&env),
+            t2::Definition::PtrFunc("nil".into(), vec![], vec![], t2::PtrExpr::Null)
+        );
+
+        let consdef = FunctionDefinition {
+            name: "cons".into(),
+            params: vec!["car".into(), "cdr".into()],
+            param_types: vec![Type::Value, Type::Named("List".into())],
+            return_type: Type::Named("List".into()),
+            body: Expression::Record(
+                vec![Expression::Ref("car".into()), Expression::Ref("cdr".into())],
+                vec![Type::Value, Type::Named("List".into())],
+            ),
+        };
+
+        println!("{:?}", consdef.check(&env));
+        assert_eq!(
+            consdef.check(&env),
+            t2::Definition::PtrFunc(
+                "cons".into(),
+                vec!["car".into()],
+                vec!["cdr".into()],
+                t2::PtrExpr::Record(
+                    vec![t2::ValExpr::Ref("car".into())],
+                    vec![t2::PtrExpr::Ref("cdr".into())]
+                )
+            )
+        );
     }
 }
