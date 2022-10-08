@@ -4,7 +4,6 @@ use crate::tier02_vmlang as t2;
 use crate::vm::Int;
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::hash::Hash;
 
 #[derive(Debug, Clone)]
 pub enum Type {
@@ -244,7 +243,7 @@ impl Expression {
                 check_expressions(args, &params, env);
             }
             Expression::Lambda(_, _, _) => Type::assert_equal(t, &self.infer(env), env),
-            Expression::GetField(idx, rec) => match rec.infer(env) {
+            Expression::GetField(idx, rec) => match rec.infer(env).resolve(env).unwrap() {
                 Type::Record(RecordType { fields }) => {
                     Type::assert_equal(&fields[*idx as usize], t, env)
                 }
@@ -259,7 +258,7 @@ impl Expression {
             Expression::Const(_) => Type::Value,
             Expression::Ref(ident) => env.lookup(ident).unwrap().clone(),
             Expression::Record(args) => Type::Record(RecordType {
-                fields: args.iter().map(|a| a.infer(env)).collect(),
+                fields: infer_expressions(args, env),
             }),
             Expression::If(c, a, b) => {
                 c.check(&Type::Value, env);
@@ -285,7 +284,7 @@ impl Expression {
                     Type::Closure(functype, fv)
                 }
             }
-            Expression::GetField(idx, rec) => match rec.infer(env) {
+            Expression::GetField(idx, rec) => match rec.infer(env).resolve(env).unwrap() {
                 Type::Record(RecordType { fields }) => fields[*idx as usize].clone(),
                 o => panic!("expected record type, but got {o:?}"),
             },
@@ -371,6 +370,14 @@ impl Expression {
                     rt => panic!("Don't know how to deal with return type {rt:?}"),
                 }
             }
+            Expression::GetField(idx, rec) => t2::ValExpr::GetField(
+                Box::new(t2::ValExpr::Const(map_index(
+                    *idx,
+                    &infer_recargs(rec, env),
+                    env,
+                ))),
+                Box::new(rec.to_ptrexpr(env)),
+            ),
             _ => panic!("expected value, got {self:?}"),
         }
     }
@@ -379,7 +386,7 @@ impl Expression {
         match self {
             Expression::Null => t2::PtrExpr::Null,
             Expression::Record(xs) => {
-                let arg_types: Vec<_> = xs.iter().map(|x| x.infer(env)).collect();
+                let arg_types = infer_expressions(xs, env);
                 let (vargs, pargs) = distribute(xs, &arg_types, env);
                 let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                 let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
@@ -436,6 +443,14 @@ impl Expression {
                     rt => panic!("Don't know how to deal with return type {rt:?}"),
                 }
             }
+            Expression::GetField(idx, rec) => t2::PtrExpr::GetField(
+                Box::new(t2::ValExpr::Const(map_index(
+                    *idx,
+                    &infer_recargs(rec, env),
+                    env,
+                ))),
+                Box::new(rec.to_ptrexpr(env)),
+            ),
             _ => panic!("expected pointer, got {self:?}"),
         }
     }
@@ -460,10 +475,42 @@ fn distribute<'a, T>(
     (vals, ptrs)
 }
 
+fn map_index(idx: Int, types: &[Type], env: &Env) -> Int {
+    let mut n_val = 0;
+    let mut n_ptr = 0;
+    let mut ith_ptr = 0;
+    for (i, t) in types.iter().enumerate() {
+        if t.is_value(env) {
+            if i == idx as usize {
+                return n_val;
+            }
+            n_val += 1;
+        }
+        if t.is_pointer(env) {
+            if i == idx as usize {
+                ith_ptr = n_ptr;
+            }
+            n_ptr += 1;
+        }
+    }
+    n_val + ith_ptr
+}
+
 fn check_expressions(xs: &[Expression], ts: &[Type], env: &Env) {
     assert_eq!(xs.len(), ts.len());
     for (x, t) in xs.iter().zip(ts) {
         x.check(t, env)
+    }
+}
+
+fn infer_expressions(xs: &[Expression], env: &Env) -> Vec<Type> {
+    xs.iter().map(|x| x.infer(env)).collect()
+}
+
+fn infer_recargs(expr: &Expression, env: &Env) -> Vec<Type> {
+    match expr.infer(env).resolve(env) {
+        Some(Type::Record(RecordType { fields })) => fields.clone(),
+        _ => panic!("not a record expression {expr:?}"),
     }
 }
 
@@ -699,7 +746,7 @@ mod tests {
         let env = Env::Empty.assoc(
             "List",
             Type::Record(RecordType {
-                fields: vec![Type::Value, Type::Named("List".into())],
+                fields: vec![Type::Named("List".into()), Type::Value], // store the cdr first, to check correct record indexing
             }),
         );
 
@@ -722,12 +769,11 @@ mod tests {
             param_types: vec![Type::Value, Type::Named("List".into())],
             return_type: Type::Named("List".into()),
             body: Expression::Record(vec![
-                Expression::Ref("car".into()),
                 Expression::Ref("cdr".into()),
+                Expression::Ref("car".into()),
             ]),
         };
 
-        println!("{:?}", consdef.check(&env));
         assert_eq!(
             consdef.check(&env),
             t2::Definition::PtrFunc(
@@ -736,9 +782,50 @@ mod tests {
                 vec!["cdr".into()],
                 t2::PtrExpr::Record(
                     vec![t2::ValExpr::Ref("car".into())],
-                    vec![t2::PtrExpr::Ref("cdr".into())]
+                    vec![t2::PtrExpr::Ref("cdr".into())],
+                )
+            )
+        );
+
+        let cardef = FunctionDefinition {
+            name: "car".into(),
+            params: vec!["list".into()],
+            param_types: vec![Type::Named("List".into())],
+            return_type: Type::Value,
+            body: Expression::GetField(1, Box::new(Expression::Ref("list".into()))),
+        };
+
+        assert_eq!(
+            cardef.check(&env),
+            t2::Definition::ValFunc(
+                "car".into(),
+                vec![],
+                vec!["list".into()],
+                t2::ValExpr::GetField(
+                    Box::new(t2::ValExpr::Const(0)),
+                    Box::new(t2::PtrExpr::Ref("list".into()))
+                )
+            )
+        );
+
+        let cdrdef = FunctionDefinition {
+            name: "cdr".into(),
+            params: vec!["list".into()],
+            param_types: vec![Type::Named("List".into())],
+            return_type: Type::Named("List".into()),
+            body: Expression::GetField(0, Box::new(Expression::Ref("list".into()))),
+        };
+
+        assert_eq!(
+            cdrdef.check(&env),
+            t2::Definition::PtrFunc(
+                "cdr".into(),
+                vec![],
+                vec!["list".into()],
+                t2::PtrExpr::GetField(
+                    Box::new(t2::ValExpr::Const(1)),
+                    Box::new(t2::PtrExpr::Ref("list".into()))
                 )
             )
         );
     }
-}
