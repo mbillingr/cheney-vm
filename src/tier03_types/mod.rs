@@ -3,12 +3,13 @@ pub mod types;
 use crate::env::Environment;
 use crate::str::Str;
 use crate::tier02_vmlang as t2;
-use crate::tier03_types::types::{RecordType, Value};
+use crate::tier03_types::types::{Builtin, Closure, Function, RecordType, Value};
 use crate::vm::Int;
 use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::rc::Rc;
+use types::FunctionSignature;
 
 pub trait Type: std::fmt::Debug {
     fn is_value(&self, env: &Env) -> bool;
@@ -28,9 +29,6 @@ pub trait Type: std::fmt::Debug {
 
 #[derive(Debug, Clone)]
 pub enum TypeEnum {
-    Builtin(FunctionType),
-    Function(FunctionType),
-    Closure(FunctionType, HashMap<Str, Rc<dyn Type>>),
     Named(Str),
     Dynamic(Rc<dyn Type>),
 }
@@ -38,9 +36,6 @@ pub enum TypeEnum {
 impl Type for TypeEnum {
     fn is_value(&self, env: &Env) -> bool {
         match self {
-            TypeEnum::Function(_) => true,
-            TypeEnum::Closure(_, _) => false,
-            TypeEnum::Builtin(_) => false,
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_value(env),
             TypeEnum::Dynamic(t) => t.is_value(env),
         }
@@ -48,9 +43,6 @@ impl Type for TypeEnum {
 
     fn is_pointer(&self, env: &Env) -> bool {
         match self {
-            TypeEnum::Function(_) => false,
-            TypeEnum::Closure(_, _) => true,
-            TypeEnum::Builtin(_) => false,
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_pointer(env),
             TypeEnum::Dynamic(t) => t.is_value(env),
         }
@@ -74,15 +66,6 @@ impl Type for TypeEnum {
     fn as_any(&self) -> &dyn Any {
         self
     }
-
-    fn callable_signature(&self) -> Option<(&[Rc<dyn Type>], &dyn Type)> {
-        match self {
-            TypeEnum::Function(FunctionType { ptypes, returns }) => Some((ptypes, &**returns)),
-            TypeEnum::Closure(FunctionType { ptypes, returns }, _) => Some((ptypes, &**returns)),
-            TypeEnum::Builtin(FunctionType { ptypes, returns }) => Some((ptypes, &**returns)),
-            _ => None,
-        }
-    }
 }
 
 impl TypeEnum {
@@ -90,53 +73,10 @@ impl TypeEnum {
         use TypeEnum::*;
         match (a, b) {
             (Dynamic(a), Dynamic(b)) => a.is_equal(&**b, env),
-            (Builtin(a), Builtin(b)) => a.equal(b, env),
-            (Function(a), Function(b)) => a.equal(b, env),
-            (Closure(a, x), Closure(b, y)) => a.equal(b, env) && Self::closure_equal(x, y, env),
             (Named(a), Named(b)) => a == b,
             (a @ Named(_), b) => b.is_equal(a.resolve(env).unwrap(), env),
             (a, b @ Named(_)) => a.is_equal(b.resolve(env).unwrap(), env),
-            _ => false,
         }
-    }
-
-    fn closure_equal(
-        x: &HashMap<Str, Rc<dyn Type>>,
-        y: &HashMap<Str, Rc<dyn Type>>,
-        env: &Env,
-    ) -> bool {
-        if x.len() != y.len() {
-            return false;
-        }
-        for (a, ta) in x {
-            match y.get(a) {
-                None => return false,
-                Some(tb) => {
-                    if !ta.is_equal(&**tb, env) {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionType {
-    ptypes: Vec<Rc<dyn Type>>,
-    returns: Rc<dyn Type>,
-}
-
-impl FunctionType {
-    fn equal(&self, other: &Self, env: &Env) -> bool {
-        self.ptypes.len() == other.ptypes.len()
-            && self.returns.is_equal(&*other.returns, env)
-            && self
-                .ptypes
-                .iter()
-                .zip(&other.ptypes)
-                .all(|(a, b)| a.is_equal(&**b, env))
     }
 }
 
@@ -176,11 +116,8 @@ impl Program {
         let mut program_env = env.clone();
 
         for def in &self.0 {
-            let t = TypeEnum::Function(FunctionType {
-                ptypes: def.param_types.clone(),
-                returns: def.return_type.clone(),
-            });
-            program_env = program_env.assoc(&def.name, Rc::new(t));
+            let t = Function::new(def.param_types.clone(), def.return_type.clone());
+            program_env = program_env.assoc(&def.name, t);
         }
 
         program_env
@@ -283,12 +220,11 @@ impl Expression {
             }
             Expression::Call(func, _) => {
                 let t = func.infer(env);
-                if let Some(TypeEnum::Function(FunctionType { returns, .. })) =
-                    t.as_any().downcast_ref()
+                if let Some(Function(FunctionSignature { returns, .. })) = t.as_any().downcast_ref()
                 {
                     return returns.clone();
                 }
-                if let Some(TypeEnum::Closure(FunctionType { returns, .. }, _)) =
+                if let Some(Closure(FunctionSignature { returns, .. }, _)) =
                     t.as_any().downcast_ref()
                 {
                     return returns.clone();
@@ -296,16 +232,16 @@ impl Expression {
                 panic!("can't call expression of type {t:?}")
             }
             Expression::Lambda(_, ptypes, body) => {
-                let functype = FunctionType {
+                let functype = FunctionSignature {
                     ptypes: ptypes.clone(),
                     returns: body.infer(env),
                 };
 
                 let fv = self.free_vars(env);
                 if fv.is_empty() {
-                    Rc::new(TypeEnum::Function(functype))
+                    Rc::new(Function(functype))
                 } else {
-                    Rc::new(TypeEnum::Closure(functype, fv))
+                    Rc::new(Closure(functype, fv))
                 }
             }
             Expression::GetField(idx, rec) => match rec
@@ -355,15 +291,14 @@ impl Expression {
             ),
             Expression::Call(func, args) => {
                 let ft = func.infer(env);
-                if let Some(TypeEnum::Function(FunctionType { ptypes, .. })) =
-                    ft.as_any().downcast_ref()
+                if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                     let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                     return t2::ValExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs);
                 }
-                if let Some(TypeEnum::Closure(FunctionType { ptypes, .. }, _)) =
+                if let Some(Closure(FunctionSignature { ptypes, .. }, _)) =
                     ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
@@ -371,8 +306,7 @@ impl Expression {
                     let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                     return t2::ValExpr::CallCls(Box::new(func.to_ptrexpr(env)), vargs, pargs);
                 }
-                if let Some(TypeEnum::Builtin(FunctionType { ptypes, .. })) =
-                    ft.as_any().downcast_ref()
+                if let Some(Builtin(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -433,15 +367,14 @@ impl Expression {
             ),
             Expression::Call(func, args) => {
                 let ft = func.infer(env);
-                if let Some(TypeEnum::Function(FunctionType { ptypes, .. })) =
-                    ft.as_any().downcast_ref()
+                if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                     let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                     return t2::PtrExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs);
                 }
-                if let Some(TypeEnum::Closure(FunctionType { ptypes, .. }, _)) =
+                if let Some(Closure(FunctionSignature { ptypes, .. }, _)) =
                     ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
@@ -566,10 +499,7 @@ fn free_vars<T: Borrow<Expression>>(xs: &[T], env: &Env) -> HashMap<Str, Rc<dyn 
 
 pub fn builtin_env() -> Env {
     let val = Rc::new(Value);
-    let vvv = Rc::new(TypeEnum::Builtin(FunctionType {
-        ptypes: vec![val.clone(), val.clone()],
-        returns: val,
-    }));
+    let vvv = Builtin::new(vec![val.clone(), val.clone()], val);
 
     Env::Empty
         .assoc("<", vvv.clone())
@@ -705,8 +635,8 @@ mod tests {
             FunctionDefinition {
                 name: "make-fn".into(),
                 params: vec!["n".into()],
-                return_type: Rc::new(TypeEnum::Closure(
-                    FunctionType {
+                return_type: Rc::new(Closure(
+                    FunctionSignature {
                         ptypes: vec![],
                         returns: value.clone(),
                     },
