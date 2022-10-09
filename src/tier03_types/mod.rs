@@ -1,7 +1,10 @@
+pub mod types;
+
 use crate::env::Environment;
 use crate::str::Str;
 use crate::tier02_vmlang as t2;
 use crate::vm::Int;
+use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -9,11 +12,14 @@ use std::rc::Rc;
 pub trait Type: std::fmt::Debug {
     fn is_value(&self, env: &Env) -> bool;
     fn is_pointer(&self, env: &Env) -> bool;
+
+    fn is_equal(&self, other: &dyn Type, env: &Env) -> bool;
+
+    fn as_any(&self) -> &dyn Any;
 }
 
 #[derive(Debug, Clone)]
 pub enum TypeEnum {
-    Empty,
     Value,
     Record(RecordType),
     Builtin(FunctionType),
@@ -23,13 +29,12 @@ pub enum TypeEnum {
     Dynamic(Rc<dyn Type>),
 }
 
-impl TypeEnum {
+impl Type for TypeEnum {
     fn is_value(&self, env: &Env) -> bool {
         match self {
             TypeEnum::Value | TypeEnum::Function(_) => true,
             TypeEnum::Record(_) | TypeEnum::Closure(_, _) => false,
             TypeEnum::Builtin(_) => false,
-            TypeEnum::Empty => false,
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_value(env),
             TypeEnum::Dynamic(t) => t.is_value(env),
         }
@@ -40,12 +45,24 @@ impl TypeEnum {
             TypeEnum::Value | TypeEnum::Function(_) => false,
             TypeEnum::Record(_) | TypeEnum::Closure(_, _) => true,
             TypeEnum::Builtin(_) => false,
-            TypeEnum::Empty => false,
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_pointer(env),
             TypeEnum::Dynamic(t) => t.is_value(env),
         }
     }
 
+    fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
+        match other.as_any().downcast_ref::<TypeEnum>() {
+            None => return false,
+            Some(te) => TypeEnum::equal(self, te, env),
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl TypeEnum {
     fn resolve<'a>(&'a self, env: &'a Env) -> Option<&'a TypeEnum> {
         // todo: return None instead of infinite recursion
         match self {
@@ -63,7 +80,7 @@ impl TypeEnum {
     fn equal(a: &TypeEnum, b: &TypeEnum, env: &Env) -> bool {
         use TypeEnum::*;
         match (a, b) {
-            (Empty, Empty) => true,
+            (Dynamic(a), Dynamic(b)) => a.is_equal(&**b, env),
             (Value, Value) => true,
             (Record(a), Record(b)) => a.equal(b, env),
             (Builtin(a), Builtin(b)) => a.equal(b, env),
@@ -185,30 +202,28 @@ impl FunctionDefinition {
         let pparams = pparams.cloned().collect();
 
         match self.return_type.resolve(env) {
-            None => panic!("Unresolvable type return type {:?}", self.return_type),
-            Some(TypeEnum::Empty) => todo!("Wanna support without return type? Not sure how..."),
-            Some(TypeEnum::Builtin(_)) => unimplemented!("No first-class builtins"),
-            Some(TypeEnum::Value | TypeEnum::Function(_)) => t2::Definition::ValFunc(
+            Some(t) if t.is_value(env) => t2::Definition::ValFunc(
                 self.name.clone(),
                 vparams,
                 pparams,
                 self.body.to_valexpr(&local_env),
             ),
-            Some(TypeEnum::Record(_) | TypeEnum::Closure(_, _)) => t2::Definition::PtrFunc(
+            Some(t) if t.is_pointer(env) => t2::Definition::PtrFunc(
                 self.name.clone(),
                 vparams,
                 pparams,
                 self.body.to_ptrexpr(&local_env),
             ),
-            Some(TypeEnum::Named(_)) => unreachable!(),
-            Some(TypeEnum::Dynamic(_)) => todo!(),
+            Some(t) => panic!("Invalid return type {t:?}"),
+            None => panic!("Unresolvable type return type {:?}", self.return_type),
         }
     }
 
     fn extend(&self, env: &Env) -> Env {
         let mut local_env = env.clone();
         for (p, t) in self.params.iter().zip(&self.param_types) {
-            assert!(!TypeEnum::equal(t, &TypeEnum::Empty, env));
+            //assert!(!TypeEnum::equal(t, &TypeEnum::Empty, env));
+            assert!(t.is_value(env) || t.is_pointer(env));
             local_env = local_env.assoc(p.clone(), t.clone());
         }
         local_env
@@ -551,6 +566,7 @@ pub fn builtin_env() -> Env {
 mod tests {
     use super::*;
     use crate::tier02_vmlang;
+    use crate::tier03_types::types::Empty;
 
     fn run(program: &Program) -> Int {
         println!("T3: {program:?}");
@@ -561,7 +577,7 @@ mod tests {
     #[test]
     fn structurally_same_types_are_equal() {
         use TypeEnum::*;
-        TypeEnum::assert_equal(&Empty, &Empty, &Env::Empty);
+        assert!(Empty.is_equal(&Empty, &Env::Empty));
         TypeEnum::assert_equal(&Value, &Value, &Env::Empty);
         TypeEnum::assert_equal(
             &Record(RecordType { fields: vec![] }),
@@ -582,7 +598,7 @@ mod tests {
     #[test]
     fn structurally_different_types_are_not_equal() {
         use TypeEnum::*;
-        assert!(!TypeEnum::equal(&Empty, &Value, &Env::Empty));
+        assert!(!Empty.is_equal(&Value, &Env::Empty));
         assert!(!TypeEnum::equal(
             &Record(RecordType {
                 fields: vec![Value]
@@ -592,7 +608,7 @@ mod tests {
         ));
         assert!(!TypeEnum::equal(
             &Record(RecordType {
-                fields: vec![Empty]
+                fields: vec![Dynamic(Rc::new(Empty))]
             }),
             &Record(RecordType {
                 fields: vec![Value]
