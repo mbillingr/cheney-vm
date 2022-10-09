@@ -30,21 +30,18 @@ pub trait Type: std::fmt::Debug {
 #[derive(Debug, Clone)]
 pub enum TypeEnum {
     Named(Str),
-    Dynamic(Rc<dyn Type>),
 }
 
 impl Type for TypeEnum {
     fn is_value(&self, env: &Env) -> bool {
         match self {
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_value(env),
-            TypeEnum::Dynamic(t) => t.is_value(env),
         }
     }
 
     fn is_pointer(&self, env: &Env) -> bool {
         match self {
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_pointer(env),
-            TypeEnum::Dynamic(t) => t.is_value(env),
         }
     }
 
@@ -59,7 +56,6 @@ impl Type for TypeEnum {
         // todo: return None instead of infinite recursion
         match self {
             TypeEnum::Named(name) => env.lookup(name).and_then(|t| t.resolve(env)),
-            _ => Some(self),
         }
     }
 
@@ -69,13 +65,10 @@ impl Type for TypeEnum {
 }
 
 impl TypeEnum {
-    fn equal(a: &TypeEnum, b: &TypeEnum, env: &Env) -> bool {
+    fn equal(a: &TypeEnum, b: &TypeEnum, _env: &Env) -> bool {
         use TypeEnum::*;
         match (a, b) {
-            (Dynamic(a), Dynamic(b)) => a.is_equal(&**b, env),
             (Named(a), Named(b)) => a == b,
-            (a @ Named(_), b) => b.is_equal(a.resolve(env).unwrap(), env),
-            (a, b @ Named(_)) => a.is_equal(b.resolve(env).unwrap(), env),
         }
     }
 }
