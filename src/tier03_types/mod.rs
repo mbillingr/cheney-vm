@@ -17,59 +17,11 @@ pub trait Type: std::fmt::Debug {
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool;
 
-    fn resolve<'a>(&'a self, env: &'a Env) -> Option<&'a dyn Type>;
-
-    fn as_any(&self) -> &dyn Any;
+    fn as_any<'a>(&'a self, env: &'a Env) -> &'a dyn Any;
 
     /// callable types should implement this
     fn callable_signature(&self) -> Option<(&[Rc<dyn Type>], &dyn Type)> {
         None
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum TypeEnum {
-    Named(Str),
-}
-
-impl Type for TypeEnum {
-    fn is_value(&self, env: &Env) -> bool {
-        match self {
-            n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_value(env),
-        }
-    }
-
-    fn is_pointer(&self, env: &Env) -> bool {
-        match self {
-            n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_pointer(env),
-        }
-    }
-
-    fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any().downcast_ref::<TypeEnum>() {
-            None => return false,
-            Some(te) => TypeEnum::equal(self, te, env),
-        }
-    }
-
-    fn resolve<'a>(&'a self, env: &'a Env) -> Option<&'a dyn Type> {
-        // todo: return None instead of infinite recursion
-        match self {
-            TypeEnum::Named(name) => env.lookup(name).and_then(|t| t.resolve(env)),
-        }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-impl TypeEnum {
-    fn equal(a: &TypeEnum, b: &TypeEnum, _env: &Env) -> bool {
-        use TypeEnum::*;
-        match (a, b) {
-            (Named(a), Named(b)) => a == b,
-        }
     }
 }
 
@@ -126,21 +78,20 @@ impl FunctionDefinition {
         let vparams = vparams.cloned().collect();
         let pparams = pparams.cloned().collect();
 
-        match self.return_type.resolve(env) {
-            Some(t) if t.is_value(env) => t2::Definition::ValFunc(
+        match &self.return_type {
+            t if t.is_value(env) => t2::Definition::ValFunc(
                 self.name.clone(),
                 vparams,
                 pparams,
                 self.body.to_valexpr(&local_env),
             ),
-            Some(t) if t.is_pointer(env) => t2::Definition::PtrFunc(
+            t if t.is_pointer(env) => t2::Definition::PtrFunc(
                 self.name.clone(),
                 vparams,
                 pparams,
                 self.body.to_ptrexpr(&local_env),
             ),
-            Some(t) => panic!("Invalid return type {t:?}"),
-            None => panic!("Unresolvable type return type {:?}", self.return_type),
+            t => panic!("Invalid return type {t:?}"),
         }
     }
 
@@ -160,11 +111,7 @@ impl Expression {
         match self {
             Expression::Null => assert!(t.is_pointer(env)),
             Expression::Const(_) => assert!(Value.is_equal(t, env)),
-            Expression::Record(xs) => match t
-                .resolve(env)
-                .map(Type::as_any)
-                .and_then(<dyn Any>::downcast_ref)
-            {
+            Expression::Record(xs) => match t.as_any(env).downcast_ref() {
                 Some(RecordType { fields }) => check_expressions(xs, fields, env),
                 _ => panic!("{self:?} is not a {t:?}"),
             },
@@ -185,12 +132,7 @@ impl Expression {
                 }
             }
             Expression::Lambda(_, _, _) => assert!(self.infer(env).is_equal(t, env)),
-            Expression::GetField(idx, rec) => match rec
-                .infer(env)
-                .resolve(env)
-                .map(Type::as_any)
-                .and_then(<dyn Any>::downcast_ref)
-            {
+            Expression::GetField(idx, rec) => match rec.infer(env).as_any(env).downcast_ref() {
                 Some(RecordType { fields }) => {
                     assert!(fields[*idx as usize].is_equal(t, env))
                 }
@@ -213,12 +155,13 @@ impl Expression {
             }
             Expression::Call(func, _) => {
                 let t = func.infer(env);
-                if let Some(Function(FunctionSignature { returns, .. })) = t.as_any().downcast_ref()
+                if let Some(Function(FunctionSignature { returns, .. })) =
+                    t.as_any(env).downcast_ref()
                 {
                     return returns.clone();
                 }
                 if let Some(Closure(FunctionSignature { returns, .. }, _)) =
-                    t.as_any().downcast_ref()
+                    t.as_any(env).downcast_ref()
                 {
                     return returns.clone();
                 }
@@ -237,12 +180,7 @@ impl Expression {
                     Rc::new(Closure(functype, fv))
                 }
             }
-            Expression::GetField(idx, rec) => match rec
-                .infer(env)
-                .resolve(env)
-                .map(Type::as_any)
-                .and_then(<dyn Any>::downcast_ref)
-            {
+            Expression::GetField(idx, rec) => match rec.infer(env).as_any(env).downcast_ref() {
                 Some(RecordType { fields }) => fields[*idx as usize].clone(),
                 o => panic!("expected record type, but got {o:?}"),
             },
@@ -284,7 +222,8 @@ impl Expression {
             ),
             Expression::Call(func, args) => {
                 let ft = func.infer(env);
-                if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
+                if let Some(Function(FunctionSignature { ptypes, .. })) =
+                    ft.as_any(env).downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -292,14 +231,15 @@ impl Expression {
                     return t2::ValExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs);
                 }
                 if let Some(Closure(FunctionSignature { ptypes, .. }, _)) =
-                    ft.as_any().downcast_ref()
+                    ft.as_any(env).downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                     let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                     return t2::ValExpr::CallCls(Box::new(func.to_ptrexpr(env)), vargs, pargs);
                 }
-                if let Some(Builtin(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
+                if let Some(Builtin(FunctionSignature { ptypes, .. })) =
+                    ft.as_any(env).downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -360,7 +300,8 @@ impl Expression {
             ),
             Expression::Call(func, args) => {
                 let ft = func.infer(env);
-                if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
+                if let Some(Function(FunctionSignature { ptypes, .. })) =
+                    ft.as_any(env).downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -368,7 +309,7 @@ impl Expression {
                     return t2::PtrExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs);
                 }
                 if let Some(Closure(FunctionSignature { ptypes, .. }, _)) =
-                    ft.as_any().downcast_ref()
+                    ft.as_any(env).downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -469,12 +410,7 @@ fn infer_expressions(xs: &[Expression], env: &Env) -> Vec<Rc<dyn Type>> {
 }
 
 fn infer_recargs(expr: &Expression, env: &Env) -> Vec<Rc<dyn Type>> {
-    match expr
-        .infer(env)
-        .resolve(env)
-        .map(Type::as_any)
-        .and_then(<dyn Any>::downcast_ref)
-    {
+    match expr.infer(env).as_any(env).downcast_ref() {
         Some(RecordType { fields }) => fields.clone(),
         _ => panic!("not a record expression {expr:?}"),
     }
@@ -505,7 +441,7 @@ pub fn builtin_env() -> Env {
 mod tests {
     use super::*;
     use crate::tier02_vmlang;
-    use crate::tier03_types::types::{Empty, Value};
+    use crate::tier03_types::types::{Empty, Named, Value};
 
     fn run(program: &Program) -> Int {
         println!("T3: {program:?}");
@@ -549,9 +485,8 @@ mod tests {
 
     #[test]
     fn named_types_equality_based_on_name() {
-        use TypeEnum::*;
-        assert!(Named("Foo".into()).is_equal(&Named("Foo".into()), &Env::Empty));
-        assert!(!Named("Foo".into()).is_equal(&Named("Bar".into()), &Env::Empty));
+        assert!(Named::new("Foo").is_equal(&*Named::new("Foo"), &Env::Empty));
+        assert!(!Named::new("Foo").is_equal(&*Named::new("Bar"), &Env::Empty));
     }
 
     #[test]
@@ -697,14 +632,14 @@ mod tests {
     fn list_type() {
         let env = Env::Empty.assoc(
             "List",
-            RecordType::new(rcvec![TypeEnum::Named("List".into()), Value]), // store the cdr first, to check correct record indexing
+            RecordType::new(vec![Named::new("List"), Value::new()]), // store the cdr first, to check correct record indexing
         );
 
         let nildef = FunctionDefinition {
             name: "nil".into(),
             params: vec![],
             param_types: vec![],
-            return_type: Rc::new(TypeEnum::Named("List".into())),
+            return_type: Named::new("List"),
             body: Expression::Null,
         };
 
@@ -716,8 +651,8 @@ mod tests {
         let consdef = FunctionDefinition {
             name: "cons".into(),
             params: vec!["car".into(), "cdr".into()],
-            param_types: rcvec![Value, TypeEnum::Named("List".into())],
-            return_type: Rc::new(TypeEnum::Named("List".into())),
+            param_types: vec![Value::new(), Named::new("List")],
+            return_type: Named::new("List"),
             body: Expression::Record(vec![
                 Expression::Ref("cdr".into()),
                 Expression::Ref("car".into()),
@@ -740,7 +675,7 @@ mod tests {
         let cardef = FunctionDefinition {
             name: "car".into(),
             params: vec!["list".into()],
-            param_types: rcvec![TypeEnum::Named("List".into())],
+            param_types: vec![Named::new("List")],
             return_type: Rc::new(Value),
             body: Expression::GetField(1, Box::new(Expression::Ref("list".into()))),
         };
@@ -761,8 +696,8 @@ mod tests {
         let cdrdef = FunctionDefinition {
             name: "cdr".into(),
             params: vec!["list".into()],
-            param_types: rcvec![TypeEnum::Named("List".into())],
-            return_type: Rc::new(TypeEnum::Named("List".into())),
+            param_types: vec![Named::new("List")],
+            return_type: Named::new("List"),
             body: Expression::GetField(0, Box::new(Expression::Ref("list".into()))),
         };
 

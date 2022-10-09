@@ -32,17 +32,13 @@ impl Type for RecordType {
     }
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any().downcast_ref::<Self>() {
+        match other.as_any(env).downcast_ref::<Self>() {
             None => false,
             Some(o) => self.equal(o, env),
         }
     }
 
-    fn resolve<'a>(&'a self, _env: &'a Env) -> Option<&'a dyn Type> {
-        Some(self)
-    }
-
-    fn as_any(&self) -> &dyn Any {
+    fn as_any(&self, _env: &Env) -> &dyn Any {
         self
     }
 }
