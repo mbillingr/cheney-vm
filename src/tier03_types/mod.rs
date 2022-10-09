@@ -12,7 +12,7 @@ pub enum Type {
     Record(RecordType),
     Builtin(FunctionType),
     Function(FunctionType),
-    Closure(FunctionType, HashMap<Str, Type>),
+    Closure(FunctionType, HkashMap<Str, Type>),
     Named(Str),
 }
 
