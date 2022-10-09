@@ -4,55 +4,64 @@ use crate::tier02_vmlang as t2;
 use crate::vm::Int;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::rc::Rc;
+
+pub trait Type: std::fmt::Debug {
+    fn is_value(&self, env: &Env) -> bool;
+    fn is_pointer(&self, env: &Env) -> bool;
+}
 
 #[derive(Debug, Clone)]
-pub enum Type {
+pub enum TypeEnum {
     Empty,
     Value,
     Record(RecordType),
     Builtin(FunctionType),
     Function(FunctionType),
-    Closure(FunctionType, HkashMap<Str, Type>),
+    Closure(FunctionType, HashMap<Str, TypeEnum>),
     Named(Str),
+    Dynamic(Rc<dyn Type>),
 }
 
-impl Type {
+impl TypeEnum {
     fn is_value(&self, env: &Env) -> bool {
         match self {
-            Type::Value | Type::Function(_) => true,
-            Type::Record(_) | Type::Closure(_, _) => false,
-            Type::Builtin(_) => false,
-            Type::Empty => false,
-            n @ Type::Named(_) => n.resolve(env).unwrap().is_value(env),
+            TypeEnum::Value | TypeEnum::Function(_) => true,
+            TypeEnum::Record(_) | TypeEnum::Closure(_, _) => false,
+            TypeEnum::Builtin(_) => false,
+            TypeEnum::Empty => false,
+            n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_value(env),
+            TypeEnum::Dynamic(t) => t.is_value(env),
         }
     }
 
     fn is_pointer(&self, env: &Env) -> bool {
         match self {
-            Type::Value | Type::Function(_) => false,
-            Type::Record(_) | Type::Closure(_, _) => true,
-            Type::Builtin(_) => false,
-            Type::Empty => false,
-            n @ Type::Named(_) => n.resolve(env).unwrap().is_pointer(env),
+            TypeEnum::Value | TypeEnum::Function(_) => false,
+            TypeEnum::Record(_) | TypeEnum::Closure(_, _) => true,
+            TypeEnum::Builtin(_) => false,
+            TypeEnum::Empty => false,
+            n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_pointer(env),
+            TypeEnum::Dynamic(t) => t.is_value(env),
         }
     }
 
-    fn resolve<'a>(&'a self, env: &'a Env) -> Option<&'a Type> {
+    fn resolve<'a>(&'a self, env: &'a Env) -> Option<&'a TypeEnum> {
         // todo: return None instead of infinite recursion
         match self {
-            Type::Named(name) => env.lookup(name).and_then(|t| t.resolve(env)),
+            TypeEnum::Named(name) => env.lookup(name).and_then(|t| t.resolve(env)),
             _ => Some(self),
         }
     }
 
-    fn assert_equal(a: &Type, b: &Type, env: &Env) {
-        if !Type::equal(a, b, env) {
+    fn assert_equal(a: &TypeEnum, b: &TypeEnum, env: &Env) {
+        if !TypeEnum::equal(a, b, env) {
             panic!("Not equal:\n  {a:?}\n  {b:?}")
         }
     }
 
-    fn equal(a: &Type, b: &Type, env: &Env) -> bool {
-        use Type::*;
+    fn equal(a: &TypeEnum, b: &TypeEnum, env: &Env) -> bool {
+        use TypeEnum::*;
         match (a, b) {
             (Empty, Empty) => true,
             (Value, Value) => true,
@@ -61,13 +70,13 @@ impl Type {
             (Function(a), Function(b)) => a.equal(b, env),
             (Closure(a, x), Closure(b, y)) => a.equal(b, env) && Self::closure_equal(x, y, env),
             (Named(a), Named(b)) => a == b,
-            (a @ Named(_), b) => Type::equal(a.resolve(env).unwrap(), b, env),
-            (a, b @ Named(_)) => Type::equal(a, b.resolve(env).unwrap(), env),
+            (a @ Named(_), b) => TypeEnum::equal(a.resolve(env).unwrap(), b, env),
+            (a, b @ Named(_)) => TypeEnum::equal(a, b.resolve(env).unwrap(), env),
             _ => false,
         }
     }
 
-    fn closure_equal(x: &HashMap<Str, Type>, y: &HashMap<Str, Type>, env: &Env) -> bool {
+    fn closure_equal(x: &HashMap<Str, TypeEnum>, y: &HashMap<Str, TypeEnum>, env: &Env) -> bool {
         if x.len() != y.len() {
             return false;
         }
@@ -75,7 +84,7 @@ impl Type {
             match y.get(a) {
                 None => return false,
                 Some(tb) => {
-                    if !Type::equal(ta, tb, env) {
+                    if !TypeEnum::equal(ta, tb, env) {
                         return false;
                     }
                 }
@@ -87,7 +96,7 @@ impl Type {
 
 #[derive(Debug, Clone)]
 pub struct RecordType {
-    fields: Vec<Type>,
+    fields: Vec<TypeEnum>,
 }
 
 impl RecordType {
@@ -97,25 +106,25 @@ impl RecordType {
                 .fields
                 .iter()
                 .zip(&other.fields)
-                .all(|(a, b)| Type::equal(a, b, env))
+                .all(|(a, b)| TypeEnum::equal(a, b, env))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct FunctionType {
-    ptypes: Vec<Type>,
-    returns: Box<Type>,
+    ptypes: Vec<TypeEnum>,
+    returns: Box<TypeEnum>,
 }
 
 impl FunctionType {
     fn equal(&self, other: &Self, env: &Env) -> bool {
         self.ptypes.len() == other.ptypes.len()
-            && Type::equal(&self.returns, &other.returns, env)
+            && TypeEnum::equal(&self.returns, &other.returns, env)
             && self
                 .ptypes
                 .iter()
                 .zip(&other.ptypes)
-                .all(|(a, b)| Type::equal(a, b, env))
+                .all(|(a, b)| TypeEnum::equal(a, b, env))
     }
 }
 
@@ -127,7 +136,7 @@ pub enum Expression {
     Ref(Str),
     If(Box<Expression>, Box<Expression>, Box<Expression>),
     Call(Box<Expression>, Vec<Expression>),
-    Lambda(Vec<Str>, Vec<Type>, Box<Expression>),
+    Lambda(Vec<Str>, Vec<TypeEnum>, Box<Expression>),
     GetField(Int, Box<Expression>),
 }
 
@@ -136,14 +145,14 @@ pub struct FunctionDefinition {
     name: Str,
     params: Vec<Str>,
     body: Expression,
-    param_types: Vec<Type>,
-    return_type: Type,
+    param_types: Vec<TypeEnum>,
+    return_type: TypeEnum,
 }
 
 #[derive(Debug)]
 pub struct Program(Vec<FunctionDefinition>);
 
-type Env = Environment<Type>;
+type Env = Environment<TypeEnum>;
 
 impl Program {
     pub fn check(&self, env: &Env) -> t2::Program {
@@ -155,7 +164,7 @@ impl Program {
         let mut program_env = env.clone();
 
         for def in &self.0 {
-            let t = Type::Function(FunctionType {
+            let t = TypeEnum::Function(FunctionType {
                 ptypes: def.param_types.clone(),
                 returns: Box::new(def.return_type.clone()),
             });
@@ -177,28 +186,29 @@ impl FunctionDefinition {
 
         match self.return_type.resolve(env) {
             None => panic!("Unresolvable type return type {:?}", self.return_type),
-            Some(Type::Empty) => todo!("Wanna support without return type? Not sure how..."),
-            Some(Type::Builtin(_)) => unimplemented!("No first-class builtins"),
-            Some(Type::Value | Type::Function(_)) => t2::Definition::ValFunc(
+            Some(TypeEnum::Empty) => todo!("Wanna support without return type? Not sure how..."),
+            Some(TypeEnum::Builtin(_)) => unimplemented!("No first-class builtins"),
+            Some(TypeEnum::Value | TypeEnum::Function(_)) => t2::Definition::ValFunc(
                 self.name.clone(),
                 vparams,
                 pparams,
                 self.body.to_valexpr(&local_env),
             ),
-            Some(Type::Record(_) | Type::Closure(_, _)) => t2::Definition::PtrFunc(
+            Some(TypeEnum::Record(_) | TypeEnum::Closure(_, _)) => t2::Definition::PtrFunc(
                 self.name.clone(),
                 vparams,
                 pparams,
                 self.body.to_ptrexpr(&local_env),
             ),
-            Some(Type::Named(_)) => unreachable!(),
+            Some(TypeEnum::Named(_)) => unreachable!(),
+            Some(TypeEnum::Dynamic(_)) => todo!(),
         }
     }
 
     fn extend(&self, env: &Env) -> Env {
         let mut local_env = env.clone();
         for (p, t) in self.params.iter().zip(&self.param_types) {
-            assert!(!Type::equal(t, &Type::Empty, env));
+            assert!(!TypeEnum::equal(t, &TypeEnum::Empty, env));
             local_env = local_env.assoc(p.clone(), t.clone());
         }
         local_env
@@ -206,69 +216,69 @@ impl FunctionDefinition {
 }
 
 impl Expression {
-    fn check(&self, t: &Type, env: &Env) {
+    fn check(&self, t: &TypeEnum, env: &Env) {
         match self {
             Expression::Null => assert!(t.is_pointer(env)),
-            Expression::Const(_) => Type::assert_equal(t, &Type::Value, env),
+            Expression::Const(_) => TypeEnum::assert_equal(t, &TypeEnum::Value, env),
             Expression::Record(xs) => match t.resolve(env) {
-                Some(Type::Record(RecordType { fields })) => check_expressions(xs, fields, env),
+                Some(TypeEnum::Record(RecordType { fields })) => check_expressions(xs, fields, env),
                 _ => panic!("{self:?} is not a {t:?}"),
             },
-            Expression::Ref(ident) => Type::assert_equal(env.lookup(ident).unwrap(), t, env),
+            Expression::Ref(ident) => TypeEnum::assert_equal(env.lookup(ident).unwrap(), t, env),
             Expression::If(c, a, b) => {
-                c.check(&Type::Value, env);
+                c.check(&TypeEnum::Value, env);
                 a.check(t, env);
                 b.check(t, env);
             }
             Expression::Call(f, args) => {
                 let (params, returns) = match f.infer(env) {
-                    Type::Function(FunctionType {
+                    TypeEnum::Function(FunctionType {
                         ptypes: params,
                         returns,
                     })
-                    | Type::Closure(
+                    | TypeEnum::Closure(
                         FunctionType {
                             ptypes: params,
                             returns,
                         },
                         _,
                     )
-                    | Type::Builtin(FunctionType {
+                    | TypeEnum::Builtin(FunctionType {
                         ptypes: params,
                         returns,
                     }) => (params, returns),
                     t => panic!("can't call expression of type {t:?}"),
                 };
-                Type::assert_equal(&*returns, t, env);
+                TypeEnum::assert_equal(&*returns, t, env);
                 check_expressions(args, &params, env);
             }
-            Expression::Lambda(_, _, _) => Type::assert_equal(t, &self.infer(env), env),
+            Expression::Lambda(_, _, _) => TypeEnum::assert_equal(t, &self.infer(env), env),
             Expression::GetField(idx, rec) => match rec.infer(env).resolve(env).unwrap() {
-                Type::Record(RecordType { fields }) => {
-                    Type::assert_equal(&fields[*idx as usize], t, env)
+                TypeEnum::Record(RecordType { fields }) => {
+                    TypeEnum::assert_equal(&fields[*idx as usize], t, env)
                 }
                 o => panic!("expected record type, but got {o:?}"),
             },
         }
     }
 
-    fn infer(&self, env: &Env) -> Type {
+    fn infer(&self, env: &Env) -> TypeEnum {
         match self {
             Expression::Null => panic!("can't infer type of Null"),
-            Expression::Const(_) => Type::Value,
+            Expression::Const(_) => TypeEnum::Value,
             Expression::Ref(ident) => env.lookup(ident).unwrap().clone(),
-            Expression::Record(args) => Type::Record(RecordType {
+            Expression::Record(args) => TypeEnum::Record(RecordType {
                 fields: infer_expressions(args, env),
             }),
             Expression::If(c, a, b) => {
-                c.check(&Type::Value, env);
+                c.check(&TypeEnum::Value, env);
                 let t = a.infer(env);
                 b.check(&t, env);
                 t
             }
             Expression::Call(func, _) => match func.infer(env) {
-                Type::Function(FunctionType { returns, .. })
-                | Type::Closure(FunctionType { returns, .. }, _) => *returns,
+                TypeEnum::Function(FunctionType { returns, .. })
+                | TypeEnum::Closure(FunctionType { returns, .. }, _) => *returns,
                 t => panic!("can't call expression of type {t:?}"),
             },
             Expression::Lambda(_, ptypes, body) => {
@@ -279,19 +289,19 @@ impl Expression {
 
                 let fv = self.free_vars(env);
                 if fv.is_empty() {
-                    Type::Function(functype)
+                    TypeEnum::Function(functype)
                 } else {
-                    Type::Closure(functype, fv)
+                    TypeEnum::Closure(functype, fv)
                 }
             }
             Expression::GetField(idx, rec) => match rec.infer(env).resolve(env).unwrap() {
-                Type::Record(RecordType { fields }) => fields[*idx as usize].clone(),
+                TypeEnum::Record(RecordType { fields }) => fields[*idx as usize].clone(),
                 o => panic!("expected record type, but got {o:?}"),
             },
         }
     }
 
-    fn free_vars(&self, env: &Env) -> HashMap<Str, Type> {
+    fn free_vars(&self, env: &Env) -> HashMap<Str, TypeEnum> {
         match self {
             Expression::Null | Expression::Const(_) => HashMap::new(),
             Expression::Ref(ident) => {
@@ -327,19 +337,19 @@ impl Expression {
             Expression::Call(func, args) => {
                 let ft = func.infer(env);
                 match ft {
-                    Type::Function(FunctionType { ptypes, .. }) => {
+                    TypeEnum::Function(FunctionType { ptypes, .. }) => {
                         let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                         t2::ValExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs)
                     }
-                    Type::Closure(FunctionType { ptypes, .. }, _) => {
+                    TypeEnum::Closure(FunctionType { ptypes, .. }, _) => {
                         let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                         t2::ValExpr::CallCls(Box::new(func.to_ptrexpr(env)), vargs, pargs)
                     }
-                    Type::Builtin(FunctionType { ptypes, .. }) => {
+                    TypeEnum::Builtin(FunctionType { ptypes, .. }) => {
                         let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
@@ -401,13 +411,13 @@ impl Expression {
             Expression::Call(func, args) => {
                 let ft = func.infer(env);
                 match ft {
-                    Type::Function(FunctionType { ptypes, .. }) => {
+                    TypeEnum::Function(FunctionType { ptypes, .. }) => {
                         let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                         t2::PtrExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs)
                     }
-                    Type::Closure(FunctionType { ptypes, .. }, _) => {
+                    TypeEnum::Closure(FunctionType { ptypes, .. }, _) => {
                         let (vargs, pargs) = distribute(args, &ptypes, env);
                         let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                         let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
@@ -458,7 +468,7 @@ impl Expression {
 
 fn distribute<'a, T>(
     things: &'a [T],
-    types: &'a [Type],
+    types: &'a [TypeEnum],
     env: &'a Env,
 ) -> (impl Iterator<Item = &'a T>, impl Iterator<Item = &'a T>) {
     assert_eq!(things.len(), types.len());
@@ -475,7 +485,7 @@ fn distribute<'a, T>(
     (vals, ptrs)
 }
 
-fn map_index(idx: Int, types: &[Type], env: &Env) -> Int {
+fn map_index(idx: Int, types: &[TypeEnum], env: &Env) -> Int {
     let mut n_val = 0;
     let mut n_ptr = 0;
     let mut ith_ptr = 0;
@@ -496,25 +506,25 @@ fn map_index(idx: Int, types: &[Type], env: &Env) -> Int {
     n_val + ith_ptr
 }
 
-fn check_expressions(xs: &[Expression], ts: &[Type], env: &Env) {
+fn check_expressions(xs: &[Expression], ts: &[TypeEnum], env: &Env) {
     assert_eq!(xs.len(), ts.len());
     for (x, t) in xs.iter().zip(ts) {
         x.check(t, env)
     }
 }
 
-fn infer_expressions(xs: &[Expression], env: &Env) -> Vec<Type> {
+fn infer_expressions(xs: &[Expression], env: &Env) -> Vec<TypeEnum> {
     xs.iter().map(|x| x.infer(env)).collect()
 }
 
-fn infer_recargs(expr: &Expression, env: &Env) -> Vec<Type> {
+fn infer_recargs(expr: &Expression, env: &Env) -> Vec<TypeEnum> {
     match expr.infer(env).resolve(env) {
-        Some(Type::Record(RecordType { fields })) => fields.clone(),
+        Some(TypeEnum::Record(RecordType { fields })) => fields.clone(),
         _ => panic!("not a record expression {expr:?}"),
     }
 }
 
-fn free_vars<T: Borrow<Expression>>(xs: &[T], env: &Env) -> HashMap<Str, Type> {
+fn free_vars<T: Borrow<Expression>>(xs: &[T], env: &Env) -> HashMap<Str, TypeEnum> {
     xs.iter()
         .map(Borrow::borrow)
         .map(|x| x.free_vars(env))
@@ -525,9 +535,9 @@ fn free_vars<T: Borrow<Expression>>(xs: &[T], env: &Env) -> HashMap<Str, Type> {
 }
 
 pub fn builtin_env() -> Env {
-    let vvv = Type::Builtin(FunctionType {
-        ptypes: vec![Type::Value, Type::Value],
-        returns: Box::new(Type::Value),
+    let vvv = TypeEnum::Builtin(FunctionType {
+        ptypes: vec![TypeEnum::Value, TypeEnum::Value],
+        returns: Box::new(TypeEnum::Value),
     });
 
     Env::Empty
@@ -550,15 +560,15 @@ mod tests {
 
     #[test]
     fn structurally_same_types_are_equal() {
-        use Type::*;
-        Type::assert_equal(&Empty, &Empty, &Env::Empty);
-        Type::assert_equal(&Value, &Value, &Env::Empty);
-        Type::assert_equal(
+        use TypeEnum::*;
+        TypeEnum::assert_equal(&Empty, &Empty, &Env::Empty);
+        TypeEnum::assert_equal(&Value, &Value, &Env::Empty);
+        TypeEnum::assert_equal(
             &Record(RecordType { fields: vec![] }),
             &Record(RecordType { fields: vec![] }),
             &Env::Empty,
         );
-        Type::assert_equal(
+        TypeEnum::assert_equal(
             &Record(RecordType {
                 fields: vec![Value],
             }),
@@ -571,16 +581,16 @@ mod tests {
 
     #[test]
     fn structurally_different_types_are_not_equal() {
-        use Type::*;
-        assert!(!Type::equal(&Empty, &Value, &Env::Empty));
-        assert!(!Type::equal(
+        use TypeEnum::*;
+        assert!(!TypeEnum::equal(&Empty, &Value, &Env::Empty));
+        assert!(!TypeEnum::equal(
             &Record(RecordType {
                 fields: vec![Value]
             }),
             &Record(RecordType { fields: vec![] }),
             &Env::Empty
         ));
-        assert!(!Type::equal(
+        assert!(!TypeEnum::equal(
             &Record(RecordType {
                 fields: vec![Empty]
             }),
@@ -593,9 +603,9 @@ mod tests {
 
     #[test]
     fn named_types_equality_based_on_name() {
-        use Type::*;
-        Type::assert_equal(&Named("Foo".into()), &Named("Foo".into()), &Env::Empty);
-        assert!(!Type::equal(
+        use TypeEnum::*;
+        TypeEnum::assert_equal(&Named("Foo".into()), &Named("Foo".into()), &Env::Empty);
+        assert!(!TypeEnum::equal(
             &Named("Foo".into()),
             &Named("Bar".into()),
             &Env::Empty
@@ -604,14 +614,14 @@ mod tests {
 
     #[test]
     fn foo() {
-        let empty = Type::Record(RecordType { fields: vec![] });
+        let empty = TypeEnum::Record(RecordType { fields: vec![] });
         let fndef = FunctionDefinition {
             name: "foo".into(),
             params: vec!["a".into(), "b".into(), "c".into()],
-            return_type: Type::Record(RecordType {
-                fields: vec![empty.clone(), Type::Value, Type::Value],
+            return_type: TypeEnum::Record(RecordType {
+                fields: vec![empty.clone(), TypeEnum::Value, TypeEnum::Value],
             }),
-            param_types: vec![Type::Value, empty.clone(), Type::Value],
+            param_types: vec![TypeEnum::Value, empty.clone(), TypeEnum::Value],
             body: Expression::Record(vec![
                 Expression::Ref("b".into()),
                 Expression::Ref("a".into()),
@@ -641,14 +651,14 @@ mod tests {
             FunctionDefinition {
                 name: "main".into(),
                 params: vec![],
-                return_type: Type::Value,
+                return_type: TypeEnum::Value,
                 param_types: vec![],
                 body: Expression::Call(Box::new(Expression::Ref("foo".into())), vec![]),
             },
             FunctionDefinition {
                 name: "foo".into(),
                 params: vec![],
-                return_type: Type::Value,
+                return_type: TypeEnum::Value,
                 param_types: vec![],
                 body: Expression::Const(42),
             },
@@ -663,7 +673,7 @@ mod tests {
             FunctionDefinition {
                 name: "main".into(),
                 params: vec![],
-                return_type: Type::Value,
+                return_type: TypeEnum::Value,
                 param_types: vec![],
                 body: Expression::Call(
                     Box::new(Expression::Call(
@@ -676,14 +686,14 @@ mod tests {
             FunctionDefinition {
                 name: "make-fn".into(),
                 params: vec!["n".into()],
-                return_type: Type::Closure(
+                return_type: TypeEnum::Closure(
                     FunctionType {
                         ptypes: vec![],
-                        returns: Box::new(Type::Value),
+                        returns: Box::new(TypeEnum::Value),
                     },
-                    HashMap::from([("n".into(), Type::Value)]),
+                    HashMap::from([("n".into(), TypeEnum::Value)]),
                 ),
-                param_types: vec![Type::Value],
+                param_types: vec![TypeEnum::Value],
                 body: Expression::Lambda(vec![], vec![], Box::new(Expression::Ref("n".into()))),
             },
         ]);
@@ -697,7 +707,7 @@ mod tests {
             FunctionDefinition {
                 name: "main".into(),
                 params: vec![],
-                return_type: Type::Value,
+                return_type: TypeEnum::Value,
                 param_types: vec![],
                 body: Expression::Call(
                     Box::new(Expression::Ref("fib".into())),
@@ -707,8 +717,8 @@ mod tests {
             FunctionDefinition {
                 name: "fib".into(),
                 params: vec!["n".into()],
-                return_type: Type::Value,
-                param_types: vec![Type::Value],
+                return_type: TypeEnum::Value,
+                param_types: vec![TypeEnum::Value],
                 body: Expression::If(
                     Box::new(Expression::Call(
                         Box::new(Expression::Ref("<".into())),
@@ -745,8 +755,8 @@ mod tests {
     fn list_type() {
         let env = Env::Empty.assoc(
             "List",
-            Type::Record(RecordType {
-                fields: vec![Type::Named("List".into()), Type::Value], // store the cdr first, to check correct record indexing
+            TypeEnum::Record(RecordType {
+                fields: vec![TypeEnum::Named("List".into()), TypeEnum::Value], // store the cdr first, to check correct record indexing
             }),
         );
 
@@ -754,7 +764,7 @@ mod tests {
             name: "nil".into(),
             params: vec![],
             param_types: vec![],
-            return_type: Type::Named("List".into()),
+            return_type: TypeEnum::Named("List".into()),
             body: Expression::Null,
         };
 
@@ -766,8 +776,8 @@ mod tests {
         let consdef = FunctionDefinition {
             name: "cons".into(),
             params: vec!["car".into(), "cdr".into()],
-            param_types: vec![Type::Value, Type::Named("List".into())],
-            return_type: Type::Named("List".into()),
+            param_types: vec![TypeEnum::Value, TypeEnum::Named("List".into())],
+            return_type: TypeEnum::Named("List".into()),
             body: Expression::Record(vec![
                 Expression::Ref("cdr".into()),
                 Expression::Ref("car".into()),
@@ -790,8 +800,8 @@ mod tests {
         let cardef = FunctionDefinition {
             name: "car".into(),
             params: vec!["list".into()],
-            param_types: vec![Type::Named("List".into())],
-            return_type: Type::Value,
+            param_types: vec![TypeEnum::Named("List".into())],
+            return_type: TypeEnum::Value,
             body: Expression::GetField(1, Box::new(Expression::Ref("list".into()))),
         };
 
@@ -811,8 +821,8 @@ mod tests {
         let cdrdef = FunctionDefinition {
             name: "cdr".into(),
             params: vec!["list".into()],
-            param_types: vec![Type::Named("List".into())],
-            return_type: Type::Named("List".into()),
+            param_types: vec![TypeEnum::Named("List".into())],
+            return_type: TypeEnum::Named("List".into()),
             body: Expression::GetField(0, Box::new(Expression::Ref("list".into()))),
         };
 
