@@ -3,7 +3,7 @@ pub mod types;
 use crate::env::Environment;
 use crate::str::Str;
 use crate::tier02_vmlang as t2;
-use crate::tier03_types::types::Value;
+use crate::tier03_types::types::{RecordType, Value};
 use crate::vm::Int;
 use std::any::Any;
 use std::borrow::Borrow;
@@ -28,7 +28,6 @@ pub trait Type: std::fmt::Debug {
 
 #[derive(Debug, Clone)]
 pub enum TypeEnum {
-    Record(RecordType),
     Builtin(FunctionType),
     Function(FunctionType),
     Closure(FunctionType, HashMap<Str, Rc<dyn Type>>),
@@ -40,7 +39,7 @@ impl Type for TypeEnum {
     fn is_value(&self, env: &Env) -> bool {
         match self {
             TypeEnum::Function(_) => true,
-            TypeEnum::Record(_) | TypeEnum::Closure(_, _) => false,
+            TypeEnum::Closure(_, _) => false,
             TypeEnum::Builtin(_) => false,
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_value(env),
             TypeEnum::Dynamic(t) => t.is_value(env),
@@ -50,7 +49,7 @@ impl Type for TypeEnum {
     fn is_pointer(&self, env: &Env) -> bool {
         match self {
             TypeEnum::Function(_) => false,
-            TypeEnum::Record(_) | TypeEnum::Closure(_, _) => true,
+            TypeEnum::Closure(_, _) => true,
             TypeEnum::Builtin(_) => false,
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_pointer(env),
             TypeEnum::Dynamic(t) => t.is_value(env),
@@ -87,17 +86,10 @@ impl Type for TypeEnum {
 }
 
 impl TypeEnum {
-    fn assert_equal(a: &TypeEnum, b: &TypeEnum, env: &Env) {
-        if !TypeEnum::equal(a, b, env) {
-            panic!("Not equal:\n  {a:?}\n  {b:?}")
-        }
-    }
-
     fn equal(a: &TypeEnum, b: &TypeEnum, env: &Env) -> bool {
         use TypeEnum::*;
         match (a, b) {
             (Dynamic(a), Dynamic(b)) => a.is_equal(&**b, env),
-            (Record(a), Record(b)) => a.equal(b, env),
             (Builtin(a), Builtin(b)) => a.equal(b, env),
             (Function(a), Function(b)) => a.equal(b, env),
             (Closure(a, x), Closure(b, y)) => a.equal(b, env) && Self::closure_equal(x, y, env),
@@ -127,22 +119,6 @@ impl TypeEnum {
             }
         }
         true
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RecordType {
-    fields: Vec<Rc<dyn Type>>,
-}
-
-impl RecordType {
-    fn equal(&self, other: &Self, env: &Env) -> bool {
-        self.fields.len() == other.fields.len()
-            && self
-                .fields
-                .iter()
-                .zip(&other.fields)
-                .all(|(a, b)| a.is_equal(&**b, env))
     }
 }
 
@@ -259,7 +235,7 @@ impl Expression {
                 .map(Type::as_any)
                 .and_then(<dyn Any>::downcast_ref)
             {
-                Some(TypeEnum::Record(RecordType { fields })) => check_expressions(xs, fields, env),
+                Some(RecordType { fields }) => check_expressions(xs, fields, env),
                 _ => panic!("{self:?} is not a {t:?}"),
             },
             Expression::Ref(ident) => assert!(env.lookup(ident).unwrap().is_equal(t, env)),
@@ -285,7 +261,7 @@ impl Expression {
                 .map(Type::as_any)
                 .and_then(<dyn Any>::downcast_ref)
             {
-                Some(TypeEnum::Record(RecordType { fields })) => {
+                Some(RecordType { fields }) => {
                     assert!(fields[*idx as usize].is_equal(t, env))
                 }
                 o => panic!("expected record type, but got {o:?}"),
@@ -298,9 +274,7 @@ impl Expression {
             Expression::Null => panic!("can't infer type of Null"),
             Expression::Const(_) => Value::new(),
             Expression::Ref(ident) => env.lookup(ident).unwrap().clone(),
-            Expression::Record(args) => Rc::new(TypeEnum::Record(RecordType {
-                fields: infer_expressions(args, env),
-            })),
+            Expression::Record(args) => RecordType::new(infer_expressions(args, env)),
             Expression::If(c, a, b) => {
                 c.check(&Value, env);
                 let t = a.infer(env);
@@ -340,7 +314,7 @@ impl Expression {
                 .map(Type::as_any)
                 .and_then(<dyn Any>::downcast_ref)
             {
-                Some(TypeEnum::Record(RecordType { fields })) => fields[*idx as usize].clone(),
+                Some(RecordType { fields }) => fields[*idx as usize].clone(),
                 o => panic!("expected record type, but got {o:?}"),
             },
         }
@@ -575,7 +549,7 @@ fn infer_recargs(expr: &Expression, env: &Env) -> Vec<Rc<dyn Type>> {
         .map(Type::as_any)
         .and_then(<dyn Any>::downcast_ref)
     {
-        Some(TypeEnum::Record(RecordType { fields })) => fields.clone(),
+        Some(RecordType { fields }) => fields.clone(),
         _ => panic!("not a record expression {expr:?}"),
     }
 }
@@ -618,43 +592,34 @@ mod tests {
 
     #[test]
     fn structurally_same_types_are_equal() {
-        use TypeEnum::*;
         assert!(Empty.is_equal(&Empty, &Env::Empty));
         assert!(Value.is_equal(&Value, &Env::Empty));
-        TypeEnum::assert_equal(
-            &Record(RecordType { fields: vec![] }),
-            &Record(RecordType { fields: vec![] }),
-            &Env::Empty,
-        );
-        TypeEnum::assert_equal(
-            &Record(RecordType {
-                fields: vec![Rc::new(Value)],
-            }),
-            &Record(RecordType {
-                fields: vec![Rc::new(Value)],
-            }),
-            &Env::Empty,
-        );
+        assert!(RecordType { fields: vec![] }.is_equal(&RecordType { fields: vec![] }, &Env::Empty));
+        assert!(RecordType {
+            fields: rcvec![Value]
+        }
+        .is_equal(
+            &RecordType {
+                fields: rcvec![Value]
+            },
+            &Env::Empty
+        ));
     }
 
     #[test]
     fn structurally_different_types_are_not_equal() {
-        use TypeEnum::*;
         assert!(!Empty.is_equal(&Value, &Env::Empty));
-        assert!(!TypeEnum::equal(
-            &Record(RecordType {
+        assert!(!RecordType {
+            fields: rcvec![Value]
+        }
+        .is_equal(&RecordType { fields: rcvec![] }, &Env::Empty));
+        assert!(!RecordType {
+            fields: rcvec![Empty]
+        }
+        .is_equal(
+            &RecordType {
                 fields: rcvec![Value]
-            }),
-            &Record(RecordType { fields: vec![] }),
-            &Env::Empty
-        ));
-        assert!(!TypeEnum::equal(
-            &Record(RecordType {
-                fields: rcvec![Empty]
-            }),
-            &Record(RecordType {
-                fields: rcvec![Value]
-            }),
+            },
             &Env::Empty
         ));
     }
@@ -662,24 +627,18 @@ mod tests {
     #[test]
     fn named_types_equality_based_on_name() {
         use TypeEnum::*;
-        TypeEnum::assert_equal(&Named("Foo".into()), &Named("Foo".into()), &Env::Empty);
-        assert!(!TypeEnum::equal(
-            &Named("Foo".into()),
-            &Named("Bar".into()),
-            &Env::Empty
-        ));
+        assert!(Named("Foo".into()).is_equal(&Named("Foo".into()), &Env::Empty));
+        assert!(!Named("Foo".into()).is_equal(&Named("Bar".into()), &Env::Empty));
     }
 
     #[test]
     fn foo() {
-        let empty = Rc::new(TypeEnum::Record(RecordType { fields: vec![] }));
+        let empty = RecordType::new(vec![]);
         let value = Rc::new(Value);
         let fndef = FunctionDefinition {
             name: "foo".into(),
             params: vec!["a".into(), "b".into(), "c".into()],
-            return_type: Rc::new(TypeEnum::Record(RecordType {
-                fields: vec![empty.clone(), value.clone(), value.clone()],
-            })),
+            return_type: RecordType::new(vec![empty.clone(), value.clone(), value.clone()]),
             param_types: vec![value.clone(), empty.clone(), value.clone()],
             body: Expression::Record(vec![
                 Expression::Ref("b".into()),
@@ -815,9 +774,7 @@ mod tests {
     fn list_type() {
         let env = Env::Empty.assoc(
             "List",
-            Rc::new(TypeEnum::Record(RecordType {
-                fields: rcvec![TypeEnum::Named("List".into()), Value], // store the cdr first, to check correct record indexing
-            })),
+            RecordType::new(rcvec![TypeEnum::Named("List".into()), Value]), // store the cdr first, to check correct record indexing
         );
 
         let nildef = FunctionDefinition {
