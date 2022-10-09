@@ -21,6 +21,10 @@ impl Type for Empty {
         }
     }
 
+    fn resolve<'a>(&'a self, _env: &'a Env) -> Option<&'a dyn Type> {
+        Some(self)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

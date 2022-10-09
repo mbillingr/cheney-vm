@@ -17,6 +17,13 @@ macro_rules! boxvec {
 }
 
 #[macro_export]
+macro_rules! rcvec {
+    ($($x:expr),*) => {
+        vec![$(Rc::new($x)),*]
+    }
+}
+
+#[macro_export]
 macro_rules! intovec {
     ($($x:expr),*) => {
         vec![$($x.into()),*]
