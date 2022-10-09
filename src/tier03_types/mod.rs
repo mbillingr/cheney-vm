@@ -3,6 +3,7 @@ pub mod types;
 use crate::env::Environment;
 use crate::str::Str;
 use crate::tier02_vmlang as t2;
+use crate::tier03_types::types::Value;
 use crate::vm::Int;
 use std::any::Any;
 use std::borrow::Borrow;
@@ -27,7 +28,6 @@ pub trait Type: std::fmt::Debug {
 
 #[derive(Debug, Clone)]
 pub enum TypeEnum {
-    Value,
     Record(RecordType),
     Builtin(FunctionType),
     Function(FunctionType),
@@ -39,7 +39,7 @@ pub enum TypeEnum {
 impl Type for TypeEnum {
     fn is_value(&self, env: &Env) -> bool {
         match self {
-            TypeEnum::Value | TypeEnum::Function(_) => true,
+            TypeEnum::Function(_) => true,
             TypeEnum::Record(_) | TypeEnum::Closure(_, _) => false,
             TypeEnum::Builtin(_) => false,
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_value(env),
@@ -49,7 +49,7 @@ impl Type for TypeEnum {
 
     fn is_pointer(&self, env: &Env) -> bool {
         match self {
-            TypeEnum::Value | TypeEnum::Function(_) => false,
+            TypeEnum::Function(_) => false,
             TypeEnum::Record(_) | TypeEnum::Closure(_, _) => true,
             TypeEnum::Builtin(_) => false,
             n @ TypeEnum::Named(_) => n.resolve(env).unwrap().is_pointer(env),
@@ -97,7 +97,6 @@ impl TypeEnum {
         use TypeEnum::*;
         match (a, b) {
             (Dynamic(a), Dynamic(b)) => a.is_equal(&**b, env),
-            (Value, Value) => true,
             (Record(a), Record(b)) => a.equal(b, env),
             (Builtin(a), Builtin(b)) => a.equal(b, env),
             (Function(a), Function(b)) => a.equal(b, env),
@@ -254,7 +253,7 @@ impl Expression {
     fn check(&self, t: &dyn Type, env: &Env) {
         match self {
             Expression::Null => assert!(t.is_pointer(env)),
-            Expression::Const(_) => assert!(TypeEnum::Value.is_equal(t, env)),
+            Expression::Const(_) => assert!(Value.is_equal(t, env)),
             Expression::Record(xs) => match t
                 .resolve(env)
                 .map(Type::as_any)
@@ -265,7 +264,7 @@ impl Expression {
             },
             Expression::Ref(ident) => assert!(env.lookup(ident).unwrap().is_equal(t, env)),
             Expression::If(c, a, b) => {
-                c.check(&TypeEnum::Value, env);
+                c.check(&Value, env);
                 a.check(t, env);
                 b.check(t, env);
             }
@@ -297,13 +296,13 @@ impl Expression {
     fn infer(&self, env: &Env) -> Rc<dyn Type> {
         match self {
             Expression::Null => panic!("can't infer type of Null"),
-            Expression::Const(_) => Rc::new(TypeEnum::Value),
+            Expression::Const(_) => Value::new(),
             Expression::Ref(ident) => env.lookup(ident).unwrap().clone(),
             Expression::Record(args) => Rc::new(TypeEnum::Record(RecordType {
                 fields: infer_expressions(args, env),
             })),
             Expression::If(c, a, b) => {
-                c.check(&TypeEnum::Value, env);
+                c.check(&Value, env);
                 let t = a.infer(env);
                 b.check(&*t, env);
                 t
@@ -592,7 +591,7 @@ fn free_vars<T: Borrow<Expression>>(xs: &[T], env: &Env) -> HashMap<Str, Rc<dyn 
 }
 
 pub fn builtin_env() -> Env {
-    let val = Rc::new(TypeEnum::Value);
+    let val = Rc::new(Value);
     let vvv = Rc::new(TypeEnum::Builtin(FunctionType {
         ptypes: vec![val.clone(), val.clone()],
         returns: val,
@@ -609,7 +608,7 @@ pub fn builtin_env() -> Env {
 mod tests {
     use super::*;
     use crate::tier02_vmlang;
-    use crate::tier03_types::types::Empty;
+    use crate::tier03_types::types::{Empty, Value};
 
     fn run(program: &Program) -> Int {
         println!("T3: {program:?}");
@@ -621,7 +620,7 @@ mod tests {
     fn structurally_same_types_are_equal() {
         use TypeEnum::*;
         assert!(Empty.is_equal(&Empty, &Env::Empty));
-        TypeEnum::assert_equal(&Value, &Value, &Env::Empty);
+        assert!(Value.is_equal(&Value, &Env::Empty));
         TypeEnum::assert_equal(
             &Record(RecordType { fields: vec![] }),
             &Record(RecordType { fields: vec![] }),
@@ -674,7 +673,7 @@ mod tests {
     #[test]
     fn foo() {
         let empty = Rc::new(TypeEnum::Record(RecordType { fields: vec![] }));
-        let value = Rc::new(TypeEnum::Value);
+        let value = Rc::new(Value);
         let fndef = FunctionDefinition {
             name: "foo".into(),
             params: vec!["a".into(), "b".into(), "c".into()],
@@ -711,14 +710,14 @@ mod tests {
             FunctionDefinition {
                 name: "main".into(),
                 params: vec![],
-                return_type: Rc::new(TypeEnum::Value),
+                return_type: Rc::new(Value),
                 param_types: vec![],
                 body: Expression::Call(Box::new(Expression::Ref("foo".into())), vec![]),
             },
             FunctionDefinition {
                 name: "foo".into(),
                 params: vec![],
-                return_type: Rc::new(TypeEnum::Value),
+                return_type: Rc::new(Value),
                 param_types: vec![],
                 body: Expression::Const(42),
             },
@@ -729,7 +728,7 @@ mod tests {
 
     #[test]
     fn simple_closure() {
-        let value: Rc<dyn Type> = Rc::new(TypeEnum::Value);
+        let value: Rc<dyn Type> = Rc::new(Value);
         let prog = Program(vec![
             FunctionDefinition {
                 name: "main".into(),
@@ -754,7 +753,7 @@ mod tests {
                     },
                     HashMap::from([("n".into(), value.clone())]),
                 )),
-                param_types: rcvec![TypeEnum::Value],
+                param_types: rcvec![Value],
                 body: Expression::Lambda(vec![], vec![], Box::new(Expression::Ref("n".into()))),
             },
         ]);
@@ -768,7 +767,7 @@ mod tests {
             FunctionDefinition {
                 name: "main".into(),
                 params: vec![],
-                return_type: Rc::new(TypeEnum::Value),
+                return_type: Rc::new(Value),
                 param_types: vec![],
                 body: Expression::Call(
                     Box::new(Expression::Ref("fib".into())),
@@ -778,8 +777,8 @@ mod tests {
             FunctionDefinition {
                 name: "fib".into(),
                 params: vec!["n".into()],
-                return_type: Rc::new(TypeEnum::Value),
-                param_types: rcvec![TypeEnum::Value],
+                return_type: Rc::new(Value),
+                param_types: rcvec![Value],
                 body: Expression::If(
                     Box::new(Expression::Call(
                         Box::new(Expression::Ref("<".into())),
@@ -817,7 +816,7 @@ mod tests {
         let env = Env::Empty.assoc(
             "List",
             Rc::new(TypeEnum::Record(RecordType {
-                fields: rcvec![TypeEnum::Named("List".into()), TypeEnum::Value], // store the cdr first, to check correct record indexing
+                fields: rcvec![TypeEnum::Named("List".into()), Value], // store the cdr first, to check correct record indexing
             })),
         );
 
@@ -837,7 +836,7 @@ mod tests {
         let consdef = FunctionDefinition {
             name: "cons".into(),
             params: vec!["car".into(), "cdr".into()],
-            param_types: rcvec![TypeEnum::Value, TypeEnum::Named("List".into())],
+            param_types: rcvec![Value, TypeEnum::Named("List".into())],
             return_type: Rc::new(TypeEnum::Named("List".into())),
             body: Expression::Record(vec![
                 Expression::Ref("cdr".into()),
@@ -862,7 +861,7 @@ mod tests {
             name: "car".into(),
             params: vec!["list".into()],
             param_types: rcvec![TypeEnum::Named("List".into())],
-            return_type: Rc::new(TypeEnum::Value),
+            return_type: Rc::new(Value),
             body: Expression::GetField(1, Box::new(Expression::Ref("list".into()))),
         };
 
