@@ -26,23 +26,31 @@ pub trait Type: std::fmt::Debug {
     }
 }
 
+pub trait Expression: std::fmt::Debug {
+    fn check(&self, t: &dyn Type, env: &Env);
+    fn get_type(&self, env: &Env) -> Rc<dyn Type>;
+    fn free_vars(&self, env: &Env) -> HashMap<Str, Rc<dyn Type>>;
+    fn to_valexpr(&self, env: &Env) -> t2::ValExpr;
+    fn to_ptrexpr(&self, env: &Env) -> t2::PtrExpr;
+}
+
 #[derive(Debug)]
-pub enum Expression {
+pub enum ExprEnum {
     Null,
     Const(Int),
-    Record(Vec<Expression>),
+    Record(Vec<ExprEnum>),
     Ref(Str),
-    If(Box<Expression>, Box<Expression>, Box<Expression>),
-    Call(Box<Expression>, Vec<Expression>),
-    Lambda(Vec<Str>, Vec<Rc<dyn Type>>, Box<Expression>),
-    GetField(Int, Box<Expression>),
+    If(Box<ExprEnum>, Box<ExprEnum>, Box<ExprEnum>),
+    Call(Box<ExprEnum>, Vec<ExprEnum>),
+    Lambda(Vec<Str>, Vec<Rc<dyn Type>>, Box<ExprEnum>),
+    GetField(Int, Box<ExprEnum>),
 }
 
 #[derive(Debug)]
 pub struct FunctionDefinition {
     name: Str,
     params: Vec<Str>,
-    body: Expression,
+    body: ExprEnum,
     param_types: Vec<Rc<dyn Type>>,
     return_type: Rc<dyn Type>,
 }
@@ -107,23 +115,23 @@ impl FunctionDefinition {
     }
 }
 
-impl Expression {
+impl Expression for ExprEnum {
     fn check(&self, t: &dyn Type, env: &Env) {
         match self {
-            Expression::Null => assert!(t.is_pointer(env)),
-            Expression::Const(_) => assert!(Value.is_equal(t, env)),
-            Expression::Record(xs) => match t.resolve(env).as_any().downcast_ref() {
+            ExprEnum::Null => assert!(t.is_pointer(env)),
+            ExprEnum::Const(_) => assert!(Value.is_equal(t, env)),
+            ExprEnum::Record(xs) => match t.resolve(env).as_any().downcast_ref() {
                 Some(RecordType { fields }) => check_expressions(xs, fields, env),
                 _ => panic!("{self:?} is not a {t:?}"),
             },
-            Expression::Ref(ident) => assert!(env.lookup(ident).unwrap().is_equal(t, env)),
-            Expression::If(c, a, b) => {
+            ExprEnum::Ref(ident) => assert!(env.lookup(ident).unwrap().is_equal(t, env)),
+            ExprEnum::If(c, a, b) => {
                 c.check(&Value, env);
                 a.check(t, env);
                 b.check(t, env);
             }
-            Expression::Call(f, args) => {
-                let ft = f.infer(env);
+            ExprEnum::Call(f, args) => {
+                let ft = f.get_type(env);
                 match ft.callable_signature() {
                     Some((params, returns)) => {
                         assert!(returns.is_equal(&*t, env));
@@ -132,9 +140,9 @@ impl Expression {
                     t => panic!("can't call expression of type {t:?}"),
                 }
             }
-            Expression::Lambda(_, _, _) => assert!(self.infer(env).is_equal(t, env)),
-            Expression::GetField(idx, rec) => {
-                let t_rec = rec.infer(env);
+            ExprEnum::Lambda(_, _, _) => assert!(self.get_type(env).is_equal(t, env)),
+            ExprEnum::GetField(idx, rec) => {
+                let t_rec = rec.get_type(env);
                 match t_rec.resolve(env).as_any().downcast_ref() {
                     Some(RecordType { fields }) => {
                         assert!(fields[*idx as usize].is_equal(t, env))
@@ -145,20 +153,20 @@ impl Expression {
         }
     }
 
-    fn infer(&self, env: &Env) -> Rc<dyn Type> {
+    fn get_type(&self, env: &Env) -> Rc<dyn Type> {
         match self {
-            Expression::Null => panic!("can't infer type of Null"),
-            Expression::Const(_) => Value::new(),
-            Expression::Ref(ident) => env.lookup(ident).unwrap().clone(),
-            Expression::Record(args) => RecordType::new(infer_expressions(args, env)),
-            Expression::If(c, a, b) => {
+            ExprEnum::Null => panic!("can't infer type of Null"),
+            ExprEnum::Const(_) => Value::new(),
+            ExprEnum::Ref(ident) => env.lookup(ident).unwrap().clone(),
+            ExprEnum::Record(args) => RecordType::new(get_expression_types(args, env)),
+            ExprEnum::If(c, a, b) => {
                 c.check(&Value, env);
-                let t = a.infer(env);
+                let t = a.get_type(env);
                 b.check(&*t, env);
                 t
             }
-            Expression::Call(func, _) => {
-                let t = func.infer(env);
+            ExprEnum::Call(func, _) => {
+                let t = func.get_type(env);
                 if let Some(Function(FunctionSignature { returns, .. })) = t.as_any().downcast_ref()
                 {
                     return returns.clone();
@@ -170,10 +178,10 @@ impl Expression {
                 }
                 panic!("can't call expression of type {t:?}")
             }
-            Expression::Lambda(_, ptypes, body) => {
+            ExprEnum::Lambda(_, ptypes, body) => {
                 let functype = FunctionSignature {
                     ptypes: ptypes.clone(),
-                    returns: body.infer(env),
+                    returns: body.get_type(env),
                 };
 
                 let fv = self.free_vars(env);
@@ -183,7 +191,7 @@ impl Expression {
                     Rc::new(Closure(functype, fv))
                 }
             }
-            Expression::GetField(idx, rec) => match rec.infer(env).as_any().downcast_ref() {
+            ExprEnum::GetField(idx, rec) => match rec.get_type(env).as_any().downcast_ref() {
                 Some(RecordType { fields }) => fields[*idx as usize].clone(),
                 o => panic!("expected record type, but got {o:?}"),
             },
@@ -192,39 +200,39 @@ impl Expression {
 
     fn free_vars(&self, env: &Env) -> HashMap<Str, Rc<dyn Type>> {
         match self {
-            Expression::Null | Expression::Const(_) => HashMap::new(),
-            Expression::Ref(ident) => {
+            ExprEnum::Null | ExprEnum::Const(_) => HashMap::new(),
+            ExprEnum::Ref(ident) => {
                 HashMap::from([(ident.clone(), env.lookup(ident).unwrap().clone())])
             }
-            Expression::Record(args) => free_vars(args, env),
-            Expression::If(c, a, b) => free_vars(&[&**a, &**b, &**c], env),
-            Expression::Call(func, args) => {
+            ExprEnum::Record(args) => free_vars(args, env),
+            ExprEnum::If(c, a, b) => free_vars(&[&**a, &**b, &**c], env),
+            ExprEnum::Call(func, args) => {
                 let mut fv = free_vars(args, env);
                 fv.extend(func.free_vars(env));
                 fv
             }
-            Expression::Lambda(params, _, body) => {
+            ExprEnum::Lambda(params, _, body) => {
                 let mut fv = body.free_vars(env);
                 for p in params {
                     fv.remove(p);
                 }
                 fv
             }
-            Expression::GetField(_, rec) => rec.free_vars(env),
+            ExprEnum::GetField(_, rec) => rec.free_vars(env),
         }
     }
 
     fn to_valexpr(&self, env: &Env) -> t2::ValExpr {
         match self {
-            Expression::Const(x) => t2::ValExpr::Const(*x),
-            Expression::Ref(ident) => t2::ValExpr::Ref(ident.clone()),
-            Expression::If(condition, consequence, alternative) => t2::ValExpr::If(
+            ExprEnum::Const(x) => t2::ValExpr::Const(*x),
+            ExprEnum::Ref(ident) => t2::ValExpr::Ref(ident.clone()),
+            ExprEnum::If(condition, consequence, alternative) => t2::ValExpr::If(
                 Box::new(condition.to_valexpr(env)),
                 Box::new(consequence.to_valexpr(env)),
                 Box::new(alternative.to_valexpr(env)),
             ),
-            Expression::Call(func, args) => {
-                let ft = func.infer(env);
+            ExprEnum::Call(func, args) => {
+                let ft = func.get_type(env);
                 if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
@@ -246,7 +254,7 @@ impl Expression {
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                     let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
 
-                    if let Expression::Ref(name) = &**func {
+                    if let ExprEnum::Ref(name) = &**func {
                         return t2::ValExpr::Builtin(name.clone(), vargs, pargs);
                     } else {
                         unimplemented!("builtin must be a direct ref (no first-class builtins)")
@@ -254,14 +262,14 @@ impl Expression {
                 }
                 panic!("can't call a {ft:?}")
             }
-            Expression::Lambda(params, ptypes, body) => {
+            ExprEnum::Lambda(params, ptypes, body) => {
                 let (vparams, pparams) = distribute(params, ptypes, env);
                 let vparams = vparams.cloned().collect();
                 let pparams = pparams.cloned().collect();
 
                 let local_env = env.extend(params, ptypes);
 
-                match body.infer(env) {
+                match body.get_type(env) {
                     rt if rt.is_value(&local_env) => t2::ValExpr::LambdaVal(
                         vparams,
                         pparams,
@@ -271,10 +279,10 @@ impl Expression {
                     rt => panic!("Don't know how to deal with return type {rt:?}"),
                 }
             }
-            Expression::GetField(idx, rec) => t2::ValExpr::GetField(
+            ExprEnum::GetField(idx, rec) => t2::ValExpr::GetField(
                 Box::new(t2::ValExpr::Const(map_index(
                     *idx,
-                    &infer_recargs(rec, env),
+                    &get_recarg_types(rec, env),
                     env,
                 ))),
                 Box::new(rec.to_ptrexpr(env)),
@@ -285,22 +293,22 @@ impl Expression {
 
     fn to_ptrexpr(&self, env: &Env) -> t2::PtrExpr {
         match self {
-            Expression::Null => t2::PtrExpr::Null,
-            Expression::Record(xs) => {
-                let arg_types = infer_expressions(xs, env);
+            ExprEnum::Null => t2::PtrExpr::Null,
+            ExprEnum::Record(xs) => {
+                let arg_types = get_expression_types(xs, env);
                 let (vargs, pargs) = distribute(xs, &arg_types, env);
                 let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                 let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                 t2::PtrExpr::Record(vargs, pargs)
             }
-            Expression::Ref(ident) => t2::PtrExpr::Ref(ident.clone()),
-            Expression::If(condition, consequence, alternative) => t2::PtrExpr::If(
+            ExprEnum::Ref(ident) => t2::PtrExpr::Ref(ident.clone()),
+            ExprEnum::If(condition, consequence, alternative) => t2::PtrExpr::If(
                 Box::new(condition.to_valexpr(env)),
                 Box::new(consequence.to_ptrexpr(env)),
                 Box::new(alternative.to_ptrexpr(env)),
             ),
-            Expression::Call(func, args) => {
-                let ft = func.infer(env);
+            ExprEnum::Call(func, args) => {
+                let ft = func.get_type(env);
                 if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
@@ -318,7 +326,7 @@ impl Expression {
                 }
                 panic!("can't call a {ft:?}")
             }
-            Expression::Lambda(params, ptypes, body) => {
+            ExprEnum::Lambda(params, ptypes, body) => {
                 let free_vars = self.free_vars(env);
                 let frees = free_vars.keys().cloned().collect::<Vec<_>>();
                 let ftypes = free_vars.values().cloned().collect::<Vec<_>>();
@@ -333,7 +341,7 @@ impl Expression {
 
                 let local_env = env.extend(params, ptypes);
 
-                match body.infer(&local_env) {
+                match body.get_type(&local_env) {
                     rt if rt.is_value(&local_env) => t2::PtrExpr::ClosureVal(
                         vfree,
                         pfree,
@@ -345,10 +353,10 @@ impl Expression {
                     rt => panic!("Don't know how to deal with return type {rt:?}"),
                 }
             }
-            Expression::GetField(idx, rec) => t2::PtrExpr::GetField(
+            ExprEnum::GetField(idx, rec) => t2::PtrExpr::GetField(
                 Box::new(t2::ValExpr::Const(map_index(
                     *idx,
-                    &infer_recargs(rec, env),
+                    &get_recarg_types(rec, env),
                     env,
                 ))),
                 Box::new(rec.to_ptrexpr(env)),
@@ -398,26 +406,26 @@ fn map_index(idx: Int, types: &[Rc<dyn Type>], env: &Env) -> Int {
     n_val + ith_ptr
 }
 
-fn check_expressions(xs: &[Expression], ts: &[Rc<dyn Type>], env: &Env) {
+fn check_expressions(xs: &[ExprEnum], ts: &[Rc<dyn Type>], env: &Env) {
     assert_eq!(xs.len(), ts.len());
     for (x, t) in xs.iter().zip(ts) {
         x.check(&**t, env)
     }
 }
 
-fn infer_expressions(xs: &[Expression], env: &Env) -> Vec<Rc<dyn Type>> {
-    xs.iter().map(|x| x.infer(env)).collect()
+fn get_expression_types(xs: &[ExprEnum], env: &Env) -> Vec<Rc<dyn Type>> {
+    xs.iter().map(|x| x.get_type(env)).collect()
 }
 
-fn infer_recargs(expr: &Expression, env: &Env) -> Vec<Rc<dyn Type>> {
-    let trec = expr.infer(env);
+fn get_recarg_types(expr: &ExprEnum, env: &Env) -> Vec<Rc<dyn Type>> {
+    let trec = expr.get_type(env);
     match trec.resolve(env).as_any().downcast_ref() {
         Some(RecordType { fields }) => fields.clone(),
         _ => panic!("not a record expression {expr:?} has type {trec:?}"),
     }
 }
 
-fn free_vars<T: Borrow<Expression>>(xs: &[T], env: &Env) -> HashMap<Str, Rc<dyn Type>> {
+fn free_vars<T: Borrow<ExprEnum>>(xs: &[T], env: &Env) -> HashMap<Str, Rc<dyn Type>> {
     xs.iter()
         .map(Borrow::borrow)
         .map(|x| x.free_vars(env))
@@ -499,10 +507,10 @@ mod tests {
             params: vec!["a".into(), "b".into(), "c".into()],
             return_type: RecordType::new(vec![empty.clone(), value.clone(), value.clone()]),
             param_types: vec![value.clone(), empty.clone(), value.clone()],
-            body: Expression::Record(vec![
-                Expression::Ref("b".into()),
-                Expression::Ref("a".into()),
-                Expression::Ref("c".into()),
+            body: ExprEnum::Record(vec![
+                ExprEnum::Ref("b".into()),
+                ExprEnum::Ref("a".into()),
+                ExprEnum::Ref("c".into()),
             ]),
         };
 
@@ -530,14 +538,14 @@ mod tests {
                 params: vec![],
                 return_type: Rc::new(Value),
                 param_types: vec![],
-                body: Expression::Call(Box::new(Expression::Ref("foo".into())), vec![]),
+                body: ExprEnum::Call(Box::new(ExprEnum::Ref("foo".into())), vec![]),
             },
             FunctionDefinition {
                 name: "foo".into(),
                 params: vec![],
                 return_type: Rc::new(Value),
                 param_types: vec![],
-                body: Expression::Const(42),
+                body: ExprEnum::Const(42),
             },
         ]);
 
@@ -553,10 +561,10 @@ mod tests {
                 params: vec![],
                 return_type: value.clone(),
                 param_types: vec![],
-                body: Expression::Call(
-                    Box::new(Expression::Call(
-                        Box::new(Expression::Ref("make-fn".into())),
-                        vec![Expression::Const(42)],
+                body: ExprEnum::Call(
+                    Box::new(ExprEnum::Call(
+                        Box::new(ExprEnum::Ref("make-fn".into())),
+                        vec![ExprEnum::Const(42)],
                     )),
                     vec![],
                 ),
@@ -572,7 +580,7 @@ mod tests {
                     HashMap::from([("n".into(), value.clone())]),
                 )),
                 param_types: rcvec![Value],
-                body: Expression::Lambda(vec![], vec![], Box::new(Expression::Ref("n".into()))),
+                body: ExprEnum::Lambda(vec![], vec![], Box::new(ExprEnum::Ref("n".into()))),
             },
         ]);
 
@@ -587,9 +595,9 @@ mod tests {
                 params: vec![],
                 return_type: Rc::new(Value),
                 param_types: vec![],
-                body: Expression::Call(
-                    Box::new(Expression::Ref("fib".into())),
-                    vec![Expression::Const(6)],
+                body: ExprEnum::Call(
+                    Box::new(ExprEnum::Ref("fib".into())),
+                    vec![ExprEnum::Const(6)],
                 ),
             },
             FunctionDefinition {
@@ -597,27 +605,27 @@ mod tests {
                 params: vec!["n".into()],
                 return_type: Rc::new(Value),
                 param_types: rcvec![Value],
-                body: Expression::If(
-                    Box::new(Expression::Call(
-                        Box::new(Expression::Ref("<".into())),
-                        vec![Expression::Ref("n".into()), Expression::Const(2)],
+                body: ExprEnum::If(
+                    Box::new(ExprEnum::Call(
+                        Box::new(ExprEnum::Ref("<".into())),
+                        vec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
                     )),
-                    Box::new(Expression::Const(1)),
-                    Box::new(Expression::Call(
-                        Box::new(Expression::Ref("+".into())),
+                    Box::new(ExprEnum::Const(1)),
+                    Box::new(ExprEnum::Call(
+                        Box::new(ExprEnum::Ref("+".into())),
                         vec![
-                            Expression::Call(
-                                Box::new(Expression::Ref("fib".into())),
-                                vec![Expression::Call(
-                                    Box::new(Expression::Ref("-".into())),
-                                    vec![Expression::Ref("n".into()), Expression::Const(1)],
+                            ExprEnum::Call(
+                                Box::new(ExprEnum::Ref("fib".into())),
+                                vec![ExprEnum::Call(
+                                    Box::new(ExprEnum::Ref("-".into())),
+                                    vec![ExprEnum::Ref("n".into()), ExprEnum::Const(1)],
                                 )],
                             ),
-                            Expression::Call(
-                                Box::new(Expression::Ref("fib".into())),
-                                vec![Expression::Call(
-                                    Box::new(Expression::Ref("-".into())),
-                                    vec![Expression::Ref("n".into()), Expression::Const(2)],
+                            ExprEnum::Call(
+                                Box::new(ExprEnum::Ref("fib".into())),
+                                vec![ExprEnum::Call(
+                                    Box::new(ExprEnum::Ref("-".into())),
+                                    vec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
                                 )],
                             ),
                         ],
@@ -641,7 +649,7 @@ mod tests {
             params: vec![],
             param_types: vec![],
             return_type: Named::new("List"),
-            body: Expression::Null,
+            body: ExprEnum::Null,
         };
 
         assert_eq!(
@@ -654,9 +662,9 @@ mod tests {
             params: vec!["car".into(), "cdr".into()],
             param_types: vec![Value::new(), Named::new("List")],
             return_type: Named::new("List"),
-            body: Expression::Record(vec![
-                Expression::Ref("cdr".into()),
-                Expression::Ref("car".into()),
+            body: ExprEnum::Record(vec![
+                ExprEnum::Ref("cdr".into()),
+                ExprEnum::Ref("car".into()),
             ]),
         };
 
@@ -678,7 +686,7 @@ mod tests {
             params: vec!["list".into()],
             param_types: vec![Named::new("List")],
             return_type: Rc::new(Value),
-            body: Expression::GetField(1, Box::new(Expression::Ref("list".into()))),
+            body: ExprEnum::GetField(1, Box::new(ExprEnum::Ref("list".into()))),
         };
 
         assert_eq!(
@@ -699,7 +707,7 @@ mod tests {
             params: vec!["list".into()],
             param_types: vec![Named::new("List")],
             return_type: Named::new("List"),
-            body: Expression::GetField(0, Box::new(Expression::Ref("list".into()))),
+            body: ExprEnum::GetField(0, Box::new(ExprEnum::Ref("list".into()))),
         };
 
         assert_eq!(
