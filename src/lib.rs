@@ -18,7 +18,7 @@ macro_rules! boxvec {
 
 #[macro_export]
 macro_rules! rcvec {
-    ($($x:expr),*) => {
+    ($($x:expr),* $(,)?) => {
         vec![$(Rc::new($x)),*]
     }
 }

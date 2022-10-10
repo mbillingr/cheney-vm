@@ -38,11 +38,11 @@ pub trait Expression: std::fmt::Debug {
 pub enum ExprEnum {
     Null,
     Const(Int),
-    Record(Vec<ExprEnum>),
+    Record(Vec<Rc<dyn Expression>>),
     Ref(Str),
-    If(Box<ExprEnum>, Box<ExprEnum>, Box<ExprEnum>),
-    Call(Box<ExprEnum>, Vec<ExprEnum>),
-    Lambda(Vec<Str>, Vec<Rc<dyn Type>>, Box<ExprEnum>),
+    If(Rc<dyn Expression>, Rc<dyn Expression>, Rc<dyn Expression>),
+    Call(Box<ExprEnum>, Vec<Rc<dyn Expression>>),
+    Lambda(Vec<Str>, Vec<Rc<dyn Type>>, Rc<dyn Expression>),
     GetField(Int, Box<ExprEnum>),
 }
 
@@ -406,14 +406,14 @@ fn map_index(idx: Int, types: &[Rc<dyn Type>], env: &Env) -> Int {
     n_val + ith_ptr
 }
 
-fn check_expressions(xs: &[ExprEnum], ts: &[Rc<dyn Type>], env: &Env) {
+fn check_expressions(xs: &[Rc<dyn Expression>], ts: &[Rc<dyn Type>], env: &Env) {
     assert_eq!(xs.len(), ts.len());
     for (x, t) in xs.iter().zip(ts) {
         x.check(&**t, env)
     }
 }
 
-fn get_expression_types(xs: &[ExprEnum], env: &Env) -> Vec<Rc<dyn Type>> {
+fn get_expression_types(xs: &[Rc<dyn Expression>], env: &Env) -> Vec<Rc<dyn Type>> {
     xs.iter().map(|x| x.get_type(env)).collect()
 }
 
@@ -425,7 +425,7 @@ fn get_recarg_types(expr: &ExprEnum, env: &Env) -> Vec<Rc<dyn Type>> {
     }
 }
 
-fn free_vars<T: Borrow<ExprEnum>>(xs: &[T], env: &Env) -> HashMap<Str, Rc<dyn Type>> {
+fn free_vars<T: Borrow<dyn Expression>>(xs: &[T], env: &Env) -> HashMap<Str, Rc<dyn Type>> {
     xs.iter()
         .map(Borrow::borrow)
         .map(|x| x.free_vars(env))
@@ -507,10 +507,10 @@ mod tests {
             params: vec!["a".into(), "b".into(), "c".into()],
             return_type: RecordType::new(vec![empty.clone(), value.clone(), value.clone()]),
             param_types: vec![value.clone(), empty.clone(), value.clone()],
-            body: ExprEnum::Record(vec![
+            body: ExprEnum::Record(rcvec![
                 ExprEnum::Ref("b".into()),
                 ExprEnum::Ref("a".into()),
-                ExprEnum::Ref("c".into()),
+                ExprEnum::Ref("c".into())
             ]),
         };
 
@@ -564,7 +564,7 @@ mod tests {
                 body: ExprEnum::Call(
                     Box::new(ExprEnum::Call(
                         Box::new(ExprEnum::Ref("make-fn".into())),
-                        vec![ExprEnum::Const(42)],
+                        rcvec![ExprEnum::Const(42)],
                     )),
                     vec![],
                 ),
@@ -580,7 +580,7 @@ mod tests {
                     HashMap::from([("n".into(), value.clone())]),
                 )),
                 param_types: rcvec![Value],
-                body: ExprEnum::Lambda(vec![], vec![], Box::new(ExprEnum::Ref("n".into()))),
+                body: ExprEnum::Lambda(vec![], vec![], Rc::new(ExprEnum::Ref("n".into()))),
             },
         ]);
 
@@ -597,7 +597,7 @@ mod tests {
                 param_types: vec![],
                 body: ExprEnum::Call(
                     Box::new(ExprEnum::Ref("fib".into())),
-                    vec![ExprEnum::Const(6)],
+                    rcvec![ExprEnum::Const(6)],
                 ),
             },
             FunctionDefinition {
@@ -606,28 +606,28 @@ mod tests {
                 return_type: Rc::new(Value),
                 param_types: rcvec![Value],
                 body: ExprEnum::If(
-                    Box::new(ExprEnum::Call(
+                    Rc::new(ExprEnum::Call(
                         Box::new(ExprEnum::Ref("<".into())),
-                        vec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
+                        rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
                     )),
-                    Box::new(ExprEnum::Const(1)),
-                    Box::new(ExprEnum::Call(
+                    Rc::new(ExprEnum::Const(1)),
+                    Rc::new(ExprEnum::Call(
                         Box::new(ExprEnum::Ref("+".into())),
-                        vec![
+                        rcvec![
                             ExprEnum::Call(
                                 Box::new(ExprEnum::Ref("fib".into())),
-                                vec![ExprEnum::Call(
+                                rcvec![ExprEnum::Call(
                                     Box::new(ExprEnum::Ref("-".into())),
-                                    vec![ExprEnum::Ref("n".into()), ExprEnum::Const(1)],
+                                    rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(1)],
                                 )],
                             ),
                             ExprEnum::Call(
                                 Box::new(ExprEnum::Ref("fib".into())),
-                                vec![ExprEnum::Call(
+                                rcvec![ExprEnum::Call(
                                     Box::new(ExprEnum::Ref("-".into())),
-                                    vec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
+                                    rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
                                 )],
-                            ),
+                            )
                         ],
                     )),
                 ),
@@ -662,7 +662,7 @@ mod tests {
             params: vec!["car".into(), "cdr".into()],
             param_types: vec![Value::new(), Named::new("List")],
             return_type: Named::new("List"),
-            body: ExprEnum::Record(vec![
+            body: ExprEnum::Record(rcvec![
                 ExprEnum::Ref("cdr".into()),
                 ExprEnum::Ref("car".into()),
             ]),
