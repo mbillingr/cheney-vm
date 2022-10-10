@@ -17,7 +17,8 @@ pub trait Type: std::fmt::Debug {
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool;
 
-    fn as_any<'a>(&'a self, env: &'a Env) -> &'a dyn Any;
+    fn resolve<'a>(&'a self, env: &'a Env) -> &'a dyn Type;
+    fn as_any(&self) -> &dyn Any;
 
     /// callable types should implement this
     fn callable_signature(&self) -> Option<(&[Rc<dyn Type>], &dyn Type)> {
@@ -111,7 +112,7 @@ impl Expression {
         match self {
             Expression::Null => assert!(t.is_pointer(env)),
             Expression::Const(_) => assert!(Value.is_equal(t, env)),
-            Expression::Record(xs) => match t.as_any(env).downcast_ref() {
+            Expression::Record(xs) => match t.resolve(env).as_any().downcast_ref() {
                 Some(RecordType { fields }) => check_expressions(xs, fields, env),
                 _ => panic!("{self:?} is not a {t:?}"),
             },
@@ -132,12 +133,15 @@ impl Expression {
                 }
             }
             Expression::Lambda(_, _, _) => assert!(self.infer(env).is_equal(t, env)),
-            Expression::GetField(idx, rec) => match rec.infer(env).as_any(env).downcast_ref() {
-                Some(RecordType { fields }) => {
-                    assert!(fields[*idx as usize].is_equal(t, env))
+            Expression::GetField(idx, rec) => {
+                let t_rec = rec.infer(env);
+                match t_rec.resolve(env).as_any().downcast_ref() {
+                    Some(RecordType { fields }) => {
+                        assert!(fields[*idx as usize].is_equal(t, env))
+                    }
+                    _ => panic!("expected record type, but got {t_rec:?}"),
                 }
-                o => panic!("expected record type, but got {o:?}"),
-            },
+            }
         }
     }
 
@@ -155,13 +159,12 @@ impl Expression {
             }
             Expression::Call(func, _) => {
                 let t = func.infer(env);
-                if let Some(Function(FunctionSignature { returns, .. })) =
-                    t.as_any(env).downcast_ref()
+                if let Some(Function(FunctionSignature { returns, .. })) = t.as_any().downcast_ref()
                 {
                     return returns.clone();
                 }
                 if let Some(Closure(FunctionSignature { returns, .. }, _)) =
-                    t.as_any(env).downcast_ref()
+                    t.as_any().downcast_ref()
                 {
                     return returns.clone();
                 }
@@ -180,7 +183,7 @@ impl Expression {
                     Rc::new(Closure(functype, fv))
                 }
             }
-            Expression::GetField(idx, rec) => match rec.infer(env).as_any(env).downcast_ref() {
+            Expression::GetField(idx, rec) => match rec.infer(env).as_any().downcast_ref() {
                 Some(RecordType { fields }) => fields[*idx as usize].clone(),
                 o => panic!("expected record type, but got {o:?}"),
             },
@@ -222,8 +225,7 @@ impl Expression {
             ),
             Expression::Call(func, args) => {
                 let ft = func.infer(env);
-                if let Some(Function(FunctionSignature { ptypes, .. })) =
-                    ft.as_any(env).downcast_ref()
+                if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -231,15 +233,14 @@ impl Expression {
                     return t2::ValExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs);
                 }
                 if let Some(Closure(FunctionSignature { ptypes, .. }, _)) =
-                    ft.as_any(env).downcast_ref()
+                    ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                     let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
                     return t2::ValExpr::CallCls(Box::new(func.to_ptrexpr(env)), vargs, pargs);
                 }
-                if let Some(Builtin(FunctionSignature { ptypes, .. })) =
-                    ft.as_any(env).downcast_ref()
+                if let Some(Builtin(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -300,8 +301,7 @@ impl Expression {
             ),
             Expression::Call(func, args) => {
                 let ft = func.infer(env);
-                if let Some(Function(FunctionSignature { ptypes, .. })) =
-                    ft.as_any(env).downcast_ref()
+                if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -309,7 +309,7 @@ impl Expression {
                     return t2::PtrExpr::CallFun(Box::new(func.to_valexpr(env)), vargs, pargs);
                 }
                 if let Some(Closure(FunctionSignature { ptypes, .. }, _)) =
-                    ft.as_any(env).downcast_ref()
+                    ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
@@ -410,9 +410,10 @@ fn infer_expressions(xs: &[Expression], env: &Env) -> Vec<Rc<dyn Type>> {
 }
 
 fn infer_recargs(expr: &Expression, env: &Env) -> Vec<Rc<dyn Type>> {
-    match expr.infer(env).as_any(env).downcast_ref() {
+    let trec = expr.infer(env);
+    match trec.resolve(env).as_any().downcast_ref() {
         Some(RecordType { fields }) => fields.clone(),
-        _ => panic!("not a record expression {expr:?}"),
+        _ => panic!("not a record expression {expr:?} has type {trec:?}"),
     }
 }
 

@@ -47,13 +47,17 @@ impl Type for Builtin {
     }
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any(env).downcast_ref::<Self>() {
+        match other.as_any().downcast_ref::<Self>() {
             None => false,
             Some(Builtin(sig)) => self.0.equal(sig, env),
         }
     }
 
-    fn as_any(&self, _env: &Env) -> &dyn Any {
+    fn resolve<'a>(&'a self, _env: &'a Env) -> &'a dyn Type {
+        self
+    }
+
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
@@ -79,13 +83,17 @@ impl Type for Function {
     }
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any(env).downcast_ref::<Self>() {
+        match other.as_any().downcast_ref::<Self>() {
             None => false,
             Some(Function(sig)) => self.0.equal(sig, env),
         }
     }
 
-    fn as_any(&self, _env: &Env) -> &dyn Any {
+    fn resolve<'a>(&'a self, _env: &'a Env) -> &'a dyn Type {
+        self
+    }
+
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
@@ -115,13 +123,17 @@ impl Type for Closure {
     }
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any(env).downcast_ref::<Self>() {
+        match other.as_any().downcast_ref::<Self>() {
             None => false,
             Some(Closure(sig, cls)) => self.0.equal(sig, env) && closure_equal(&self.1, cls, env),
         }
     }
 
-    fn as_any(&self, _env: &Env) -> &dyn Any {
+    fn resolve<'a>(&'a self, _env: &'a Env) -> &'a dyn Type {
+        self
+    }
+
+    fn as_any(&self) -> &dyn Any {
         self
     }
 

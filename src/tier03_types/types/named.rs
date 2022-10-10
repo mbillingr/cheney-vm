@@ -11,10 +11,6 @@ impl Named {
     pub fn new(name: impl Into<Str>) -> Rc<Named> {
         Rc::new(Named(name.into()))
     }
-
-    fn resolve<'a>(&'a self, env: &'a Env) -> &'a dyn Type {
-        &**env.lookup(&self.0).expect("unable to resolve type")
-    }
 }
 
 impl Type for Named {
@@ -27,13 +23,17 @@ impl Type for Named {
     }
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any(env).downcast_ref::<Self>() {
-            None => self.resolve(env).is_equal(other, env),
+        match other.as_any().downcast_ref::<Self>() {
+            None => self.is_equal(other, env),
             Some(Named(name)) => return &self.0 == name,
         }
     }
 
-    fn as_any<'a>(&'a self, env: &'a Env) -> &'a dyn Any {
-        self.resolve(env).as_any(env)
+    fn resolve<'a>(&'a self, env: &'a Env) -> &'a dyn Type {
+        &**env.lookup(&self.0).expect("unable to resolve type")
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
