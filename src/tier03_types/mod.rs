@@ -1,10 +1,11 @@
 pub mod types;
 
 use crate::env::Environment;
+use crate::memory::{ChattyCollector, CopyAllocator, CopyCollector};
 use crate::str::Str;
 use crate::tier02_vmlang as t2;
 use crate::tier03_types::types::{Builtin, Closure, Function, RecordType, Value};
-use crate::vm::Int;
+use crate::vm::{BuiltinFunctionType, Int};
 use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -446,16 +447,64 @@ pub fn builtin_env() -> Env {
         .assoc("*", vvv)
 }
 
+pub struct LanguageContext {
+    t2_ctx: t2::LanguageContext,
+    builtin_env: Env,
+}
+
+impl Default for LanguageContext {
+    fn default() -> Self {
+        let val = Rc::new(Value);
+        let vvv: Rc<dyn Type> = Builtin::new(vec![val.clone(), val.clone()], val);
+        let vvv = &vvv;
+
+        let mut ctx = Self::empty();
+        ctx.register_builtin("<", vvv, |mut ctx| {
+            if ctx.pop_val() > ctx.pop_val() {
+                Int::MAX
+            } else {
+                0
+            }
+        });
+        ctx.register_builtin("+", vvv, |mut ctx| ctx.pop_val() + ctx.pop_val());
+        ctx.register_builtin("-", vvv, |mut ctx| {
+            let b = ctx.pop_val();
+            ctx.pop_val() - b
+        });
+        ctx.register_builtin("*", vvv, |mut ctx| ctx.pop_val() * ctx.pop_val());
+        ctx
+    }
+}
+
+impl LanguageContext {
+    pub fn empty() -> Self {
+        LanguageContext {
+            t2_ctx: t2::LanguageContext::empty(),
+            builtin_env: Env::Empty,
+        }
+    }
+
+    pub fn register_builtin(
+        &mut self,
+        name: impl Into<Str>,
+        fntype: &Rc<dyn Type>,
+        func: BuiltinFunctionType<CopyAllocator, ChattyCollector<CopyCollector>>,
+    ) -> Int {
+        let name = name.into();
+        self.builtin_env = self.builtin_env.assoc(name.clone(), fntype.clone());
+        self.t2_ctx.register_builtin(name, func)
+    }
+
+    pub fn run(&mut self, program: &Program) -> Int {
+        println!("T3: {program:?}");
+        self.t2_ctx.run(&program.check(&self.builtin_env))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tier03_types::types::{Empty, Named, Value};
-
-    fn run(program: &Program) -> Int {
-        println!("T3: {program:?}");
-        let env = builtin_env();
-        t2::LanguageContext::default().run(&program.check(&env))
-    }
 
     #[test]
     fn structurally_same_types_are_equal() {
@@ -548,7 +597,7 @@ mod tests {
             },
         ]);
 
-        assert_eq!(run(&prog), 42);
+        assert_eq!(LanguageContext::default().run(&prog), 42);
     }
 
     #[test]
@@ -583,7 +632,7 @@ mod tests {
             },
         ]);
 
-        assert_eq!(run(&prog), 42);
+        assert_eq!(LanguageContext::default().run(&prog), 42);
     }
 
     #[test]
@@ -633,7 +682,7 @@ mod tests {
             },
         ]);
 
-        assert_eq!(run(&prog), 13);
+        assert_eq!(LanguageContext::default().run(&prog), 13);
     }
 
     #[test]
