@@ -1,9 +1,10 @@
+use crate::str::Str;
 use std::rc::Rc;
 
 #[derive(Debug)]
 pub enum Environment<T> {
     Empty,
-    Entry(Rc<(String, T, Environment<T>)>),
+    Entry(Rc<(Str, T, Environment<T>)>),
 }
 
 impl<T> Clone for Environment<T> {
@@ -16,8 +17,8 @@ impl<T> Clone for Environment<T> {
 }
 
 impl<T> Environment<T> {
-    pub fn assoc(&self, name: impl ToString, thing: T) -> Self {
-        Environment::Entry(Rc::new((name.to_string(), thing, self.clone())))
+    pub fn assoc(&self, name: impl Into<Str>, thing: T) -> Self {
+        Environment::Entry(Rc::new((name.into(), thing, self.clone())))
     }
 
     pub fn lookup(&self, name: &str) -> Option<&T> {
@@ -37,7 +38,7 @@ impl<T> Environment<T> {
 impl<T: Clone> Environment<T> {
     pub fn extend<'a, S>(&self, names: &'a [S], things: &[T]) -> Self
     where
-        &'a S: ToString,
+        &'a S: Into<Str>,
     {
         assert_eq!(names.len(), things.len());
         let mut env = self.clone();
