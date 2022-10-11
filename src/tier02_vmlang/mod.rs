@@ -1,6 +1,7 @@
 use crate::env::Environment;
+use crate::memory::{ChattyCollector, CopyAllocator, CopyCollector};
 use crate::str::Str;
-use crate::vm::{Allocator, GarbageCollector, Half, Int, Op, RecordSignature, Vm};
+use crate::vm::{transform_labels, BuiltinFunctionType, Half, Int, Op, RecordSignature, Vm};
 use std::collections::HashMap;
 
 pub type Env = Environment<Binding>;
@@ -642,34 +643,65 @@ impl Env {
     }
 }
 
-const BUILTIN_LT: Int = 0;
-const BUILTIN_ADD: Int = 1;
-const BUILTIN_SUB: Int = 2;
-const BUILTIN_MUL: Int = 3;
-
-pub fn register_builtins<AC: Allocator, GC: GarbageCollector>(vm: &mut Vm<AC, GC>) {
-    vm.register_builtin(BUILTIN_LT, "<", |mut ctx| {
-        if ctx.pop_val() > ctx.pop_val() {
-            Int::MAX
-        } else {
-            0
-        }
-    });
-    vm.register_builtin(BUILTIN_ADD, "+", |mut ctx| ctx.pop_val() + ctx.pop_val());
-    vm.register_builtin(BUILTIN_SUB, "-", |mut ctx| {
-        let b = ctx.pop_val();
-        ctx.pop_val() - b
-    });
-    vm.register_builtin(BUILTIN_MUL, "*", |mut ctx| ctx.pop_val() * ctx.pop_val());
+pub struct LanguageContext {
+    vm: Vm<CopyAllocator, ChattyCollector<CopyCollector>>,
+    builtin_env: Env,
+    next_builtin_id: Int,
 }
 
-pub fn builtin_env() -> Env {
-    let mut env = Env::Empty;
-    env = env.assoc("<", Binding::Builtin(BUILTIN_LT));
-    env = env.assoc("+", Binding::Builtin(BUILTIN_ADD));
-    env = env.assoc("-", Binding::Builtin(BUILTIN_SUB));
-    env = env.assoc("*", Binding::Builtin(BUILTIN_MUL));
-    env
+impl Default for LanguageContext {
+    fn default() -> Self {
+        let mut ctx = Self::empty();
+        ctx.register_builtin("<", |mut ctx| {
+            if ctx.pop_val() > ctx.pop_val() {
+                Int::MAX
+            } else {
+                0
+            }
+        });
+        ctx.register_builtin("+", |mut ctx| ctx.pop_val() + ctx.pop_val());
+        ctx.register_builtin("-", |mut ctx| {
+            let b = ctx.pop_val();
+            ctx.pop_val() - b
+        });
+        ctx.register_builtin("*", |mut ctx| ctx.pop_val() * ctx.pop_val());
+        ctx
+    }
+}
+
+impl LanguageContext {
+    pub fn empty() -> Self {
+        LanguageContext {
+            vm: Vm::new(CopyAllocator, ChattyCollector::new(CopyCollector)),
+            builtin_env: Env::Empty,
+            next_builtin_id: 0,
+        }
+    }
+
+    pub fn register_builtin(
+        &mut self,
+        name: impl Into<Str>,
+        func: BuiltinFunctionType<CopyAllocator, ChattyCollector<CopyCollector>>,
+    ) -> Int {
+        let name = name.into();
+        let builtin_id = self.next_builtin_id;
+        self.builtin_env = self
+            .builtin_env
+            .assoc(name.clone(), Binding::Builtin(builtin_id));
+        self.vm.register_builtin(builtin_id, name, func);
+        self.next_builtin_id += 1;
+        builtin_id
+    }
+
+    pub fn run(&mut self, program: &Program) -> Int {
+        println!("T2: {program:?}");
+        let code = program.compile(&self.builtin_env, &mut Compiler::new());
+        for op in &code {
+            println!("{op:?}");
+        }
+        let code: Vec<_> = transform_labels(&code).collect();
+        self.vm.run(&code)
+    }
 }
 
 #[macro_export]
@@ -1459,24 +1491,11 @@ pub mod tests {
 
     pub mod full_stack_tests {
         use super::*;
-        use crate::vm::{transform_labels, Vm};
-
-        pub fn run(program: Program) -> Int {
-            println!("T2: {program:?}");
-            let code = program.compile(&builtin_env(), &mut Compiler::new());
-            for op in &code {
-                println!("{op:?}");
-            }
-            let code: Vec<_> = transform_labels(&code).collect();
-            let mut vm = Vm::default();
-            register_builtins(&mut vm);
-            vm.run(&code)
-        }
 
         #[test]
         fn simple_program() {
             assert_eq!(
-                run(vmlang!(program
+                LanguageContext::default().run(&vmlang!(program
                     (define (main () () -> val) 42))),
                 42
             );
@@ -1485,7 +1504,7 @@ pub mod tests {
         #[test]
         fn multiple_calls() {
             assert_eq!(
-                run(vmlang!(program
+                LanguageContext::default().run(&vmlang!(program
                     (define (main () () -> val) (fun->val foo () ()))
                     (define (foo () () -> val) 42)
                 )),
@@ -1496,7 +1515,7 @@ pub mod tests {
         #[test]
         fn add_numbers() {
             assert_eq!(
-                run(vmlang!(program
+                LanguageContext::default().run(&vmlang!(program
                     (define (main () () -> val) (+ (1 2) ())))),
                 3
             );
@@ -1505,7 +1524,7 @@ pub mod tests {
         #[test]
         fn closure() {
             assert_eq!(
-                run(vmlang!(program
+                LanguageContext::default().run(&vmlang!(program
                     (define (main () () -> val)
                         (cls->val (fun->ptr store (123) ()) () ()))
                     (define (store (n) () -> ptr)
@@ -1518,7 +1537,7 @@ pub mod tests {
         #[test]
         fn fibonacci() {
             assert_eq!(
-                run(vmlang!(program
+                LanguageContext::default().run(&vmlang!(program
                     (define (main () () -> val) (fun->val fib (5) ()))
                     (define (fib (n) () -> val)
                         (val-if (< ((val n) 2) ())
@@ -1534,7 +1553,7 @@ pub mod tests {
         #[test]
         fn side_effects() {
             assert_eq!(
-                run(vmlang!(program
+                LanguageContext::default().run(&vmlang!(program
                     (define (main () () -> val)
                         // pass new record to foo
                         (fun->val foo () ((record (0) ()))))

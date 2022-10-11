@@ -449,13 +449,12 @@ pub fn builtin_env() -> Env {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tier02_vmlang;
     use crate::tier03_types::types::{Empty, Named, Value};
 
     fn run(program: &Program) -> Int {
         println!("T3: {program:?}");
         let env = builtin_env();
-        tier02_vmlang::tests::full_stack_tests::run(program.check(&env))
+        t2::LanguageContext::default().run(&program.check(&env))
     }
 
     #[test]
