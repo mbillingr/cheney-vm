@@ -55,6 +55,7 @@ mod env;
 mod memory;
 //pub mod simple_type_lang;
 mod str;
+pub mod tier01_asm;
 pub mod tier02_vmlang;
 pub mod tier03_types;
 //pub mod typelang;
