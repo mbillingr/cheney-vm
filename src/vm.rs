@@ -26,10 +26,10 @@ pub enum Op<T> {
 
     PtrPushEnv,
     PtrPopEnv,
-    PushLocal(Int),
-    PopLocal(Int),
-    PtrPushLocal(Int),
-    PtrPopLocal(Int),
+    Fetch(Int),
+    Store(Int),
+    PtrFetch(Int),
+    PtrStore(Int),
 
     PushFrom(Int),
     PopInto(Int),
@@ -87,10 +87,10 @@ impl<T> Op<T> {
             Op::Const(x) => Op::Const(*x),
             Op::PtrPushEnv => Op::PtrPushEnv,
             Op::PtrPopEnv => Op::PtrPopEnv,
-            Op::PushLocal(idx) => Op::PushLocal(*idx),
-            Op::PopLocal(idx) => Op::PopLocal(*idx),
-            Op::PtrPushLocal(idx) => Op::PtrPushLocal(*idx),
-            Op::PtrPopLocal(idx) => Op::PtrPopLocal(*idx),
+            Op::Fetch(idx) => Op::Fetch(*idx),
+            Op::Store(idx) => Op::Store(*idx),
+            Op::PtrFetch(idx) => Op::PtrFetch(*idx),
+            Op::PtrStore(idx) => Op::PtrStore(*idx),
             Op::PushFrom(idx) => Op::PushFrom(*idx),
             Op::PopInto(idx) => Op::PopInto(*idx),
             Op::PtrPushFrom(idx) => Op::PtrPushFrom(*idx),
@@ -283,13 +283,13 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                 Op::Const(x) => self.val_stack.push(x),
                 Op::PtrPushEnv => self.ptr_stack.push(self.env),
                 Op::PtrPopEnv => self.env = self.ptr_stack.pop().unwrap(),
-                Op::PushLocal(idx) => self.val_stack.push(self.get_ptr_offset(self.env, idx)),
-                Op::PopLocal(idx) => {
+                Op::Fetch(idx) => self.val_stack.push(self.get_ptr_offset(self.env, idx)),
+                Op::Store(idx) => {
                     let val = self.val_stack.pop().unwrap();
                     self.set_local(idx, val);
                 }
-                Op::PtrPushLocal(idx) => self.ptr_stack.push(self.get_ptr_offset(self.env, idx)),
-                Op::PtrPopLocal(idx) => {
+                Op::PtrFetch(idx) => self.ptr_stack.push(self.get_ptr_offset(self.env, idx)),
+                Op::PtrStore(idx) => {
                     let val = self.ptr_stack.pop().unwrap();
                     self.set_local(idx, val);
                 }
@@ -555,7 +555,7 @@ mod tests {
         vm.env = vm.alloc(3, 0);
         vm.poke(vm.env, &[10, 11, 12]);
 
-        let res = vm.run(&[Op::PushLocal(1), Op::Halt]);
+        let res = vm.run(&[Op::Fetch(1), Op::Halt]);
 
         assert_eq!(res, 11);
     }
@@ -567,7 +567,7 @@ mod tests {
         vm.poke(vm.env, &[10, 11, 12]);
         vm.val_stack = vec![42];
 
-        vm.run(&[Op::PopLocal(2), Op::Halt]);
+        vm.run(&[Op::Store(2), Op::Halt]);
 
         assert_eq!(vm.val_stack, []);
         assert_eq!(vm.peek(vm.env), rec![10, 11, 42]);
@@ -607,7 +607,7 @@ mod tests {
         vm.poke(ptr, &[33]);
         vm.poke(vm.env, &[11, 22, ptr]);
 
-        vm.run(&[Op::PtrPushLocal(2), Op::Halt]);
+        vm.run(&[Op::PtrFetch(2), Op::Halt]);
 
         assert_eq!(vm.ptr_stack, [ptr]);
     }
@@ -619,7 +619,7 @@ mod tests {
         let ptr = vm.alloc(1, 0);
         vm.ptr_stack.push(ptr);
 
-        vm.run(&[Op::PtrPopLocal(2), Op::Halt]);
+        vm.run(&[Op::PtrStore(2), Op::Halt]);
 
         assert_eq!(vm.ptr_stack, []);
         assert_eq!(vm.peek(vm.env), rec![0, 0, [0]]);
@@ -893,10 +893,10 @@ mod tests {
             // func
             Op::Label("func"),
             // load x
-            Op::PushLocal(1),
+            Op::Fetch(1),
             // return
-            Op::PushLocal(0),
-            Op::PtrPushLocal(2),
+            Op::Fetch(0),
+            Op::PtrFetch(2),
             Op::PtrPopEnv,
             Op::Jump,
             // main
@@ -940,9 +940,9 @@ mod tests {
             Op::Label("invoke"),
             Op::Alloc(RecordSignature::new(1, 0)),
             Op::PtrPopEnv,
-            Op::PopLocal(0),
+            Op::Store(0),
             Op::Const(42),
-            Op::PushLocal(0),
+            Op::Fetch(0),
             Op::Jump,
             // main
             Op::Label("main"),

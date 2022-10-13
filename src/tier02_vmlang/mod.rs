@@ -169,12 +169,12 @@ impl Compile for ValExpr {
                 None => panic!("Unbound identifier: {ident}"),
                 Some(Binding::Builtin(_)) => panic!("Can't dereference builtin {ident}"),
                 Some(Binding::Static) => vec![Op::PushAddr(ident.clone())],
-                Some(Binding::LocalVal(idx)) => vec![Op::PushLocal(*idx)],
+                Some(Binding::LocalVal(idx)) => vec![Op::Fetch(*idx)],
                 Some(Binding::LocalPtr(_) | Binding::ClosedPtr(_, _)) => {
                     panic!("expected value, but {ident} is a pointer")
                 }
                 Some(Binding::ClosedVal(cls, idx)) => {
-                    vec![Op::PtrPushLocal(*cls), Op::PushFrom(*idx), Op::PtrDrop(0)]
+                    vec![Op::PtrFetch(*cls), Op::PushFrom(*idx), Op::PtrDrop(0)]
                 }
             },
             ValExpr::GetField(idx, rec) => {
@@ -236,9 +236,9 @@ impl Compile for PtrExpr {
                 Some(Binding::LocalVal(_) | Binding::ClosedVal(_, _)) => {
                     panic!("expected pointer, but {ident} is a value")
                 }
-                Some(Binding::LocalPtr(idx)) => vec![Op::PtrPushLocal(*idx)],
+                Some(Binding::LocalPtr(idx)) => vec![Op::PtrFetch(*idx)],
                 Some(Binding::ClosedPtr(cls, idx)) => vec![
-                    Op::PtrPushLocal(*cls),
+                    Op::PtrFetch(*cls),
                     Op::PtrPushFrom(*idx),
                     Op::PtrDrop(1),
                 ],
@@ -472,12 +472,12 @@ impl Compiler {
         code.push(Op::comment("previous env and pointer args"));
         for _ in 0..n_pargs + 1 {
             idx -= 1;
-            code.push(Op::PtrPopLocal(idx));
+            code.push(Op::PtrStore(idx));
         }
         code.push(Op::comment("value args and return address"));
         for _ in 0..n_vargs + 1 {
             idx -= 1;
-            code.push(Op::PopLocal(idx));
+            code.push(Op::Store(idx));
         }
 
         code
@@ -498,12 +498,12 @@ impl Compiler {
         code.push(Op::comment("previous env, closure and pointer args"));
         for _ in 0..n_pargs + 2 {
             idx -= 1;
-            code.push(Op::PtrPopLocal(idx));
+            code.push(Op::PtrStore(idx));
         }
         code.push(Op::comment("value args and return address"));
         for _ in 0..n_vargs + 1 {
             idx -= 1;
-            code.push(Op::PopLocal(idx));
+            code.push(Op::Store(idx));
         }
 
         code
@@ -512,9 +512,9 @@ impl Compiler {
     fn compile_epilogue(&mut self, retaddr_idx: Int, retenv_idx: Int) -> Vec<Op<Str>> {
         vec![
             Op::comment("return to address"),
-            Op::PushLocal(retaddr_idx),
+            Op::Fetch(retaddr_idx),
             Op::comment("restore previous env"),
-            Op::PtrPushLocal(retenv_idx),
+            Op::PtrFetch(retenv_idx),
             Op::PtrPopEnv,
             Op::Jump,
         ]
@@ -1060,13 +1060,13 @@ pub mod tests {
                     // prologue
                     Op::Alloc(RecordSignature::new(1, 1)),
                     Op::PtrPopEnv,
-                    Op::PtrPopLocal(1),
-                    Op::PopLocal(0),
+                    Op::PtrStore(1),
+                    Op::Store(0),
                     // body
                     Op::Const(123),
                     // epilogue
-                    Op::PushLocal(0),
-                    Op::PtrPushLocal(1),
+                    Op::Fetch(0),
+                    Op::PtrFetch(1),
                     Op::PtrPopEnv,
                     Op::Jump,
                     Op::label("after-lambda-1"),
@@ -1089,18 +1089,18 @@ pub mod tests {
                     // prologue
                     Op::Alloc(RecordSignature::new(3, 4)),
                     Op::PtrPopEnv,
-                    Op::PtrPopLocal(6),
-                    Op::PtrPopLocal(5),
-                    Op::PtrPopLocal(4),
-                    Op::PtrPopLocal(3),
-                    Op::PopLocal(2),
-                    Op::PopLocal(1),
-                    Op::PopLocal(0),
+                    Op::PtrStore(6),
+                    Op::PtrStore(5),
+                    Op::PtrStore(4),
+                    Op::PtrStore(3),
+                    Op::Store(2),
+                    Op::Store(1),
+                    Op::Store(0),
                     // body
-                    Op::PushLocal(2),
+                    Op::Fetch(2),
                     // epilogue
-                    Op::PushLocal(0),
-                    Op::PtrPushLocal(6),
+                    Op::Fetch(0),
+                    Op::PtrFetch(6),
                     Op::PtrPopEnv,
                     Op::Jump,
                     Op::label("after-lambda-1"),
@@ -1123,18 +1123,18 @@ pub mod tests {
                     // prologue
                     Op::Alloc(RecordSignature::new(4, 3)),
                     Op::PtrPopEnv,
-                    Op::PtrPopLocal(6),
-                    Op::PtrPopLocal(5),
-                    Op::PtrPopLocal(4),
-                    Op::PopLocal(3),
-                    Op::PopLocal(2),
-                    Op::PopLocal(1),
-                    Op::PopLocal(0),
+                    Op::PtrStore(6),
+                    Op::PtrStore(5),
+                    Op::PtrStore(4),
+                    Op::Store(3),
+                    Op::Store(2),
+                    Op::Store(1),
+                    Op::Store(0),
                     // body
-                    Op::PtrPushLocal(4),
+                    Op::PtrFetch(4),
                     // epilogue
-                    Op::PushLocal(0),
-                    Op::PtrPushLocal(6),
+                    Op::Fetch(0),
+                    Op::PtrFetch(6),
                     Op::PtrPopEnv,
                     Op::Jump,
                     Op::label("after-lambda-1"),
@@ -1190,7 +1190,7 @@ pub mod tests {
                 ),
                 vec![
                     Op::push_addr("return-1"),
-                    Op::PushLocal(7),
+                    Op::Fetch(7),
                     Op::PtrPushEnv,
                     Op::Jump,
                     Op::label("return-1"),
@@ -1249,7 +1249,7 @@ pub mod tests {
                 ),
                 vec![
                     Op::push_addr("return-1"),
-                    Op::PtrPushLocal(5),
+                    Op::PtrFetch(5),
                     Op::PushFrom(0),
                     Op::PtrPushEnv,
                     // Imminent Call
@@ -1270,7 +1270,7 @@ pub mod tests {
                 ),
                 vec![
                     Op::push_addr("return-1"),
-                    Op::PtrPushLocal(5),
+                    Op::PtrFetch(5),
                     Op::PushFrom(0),
                     Op::PtrPushEnv,
                     // Imminent Call
@@ -1300,17 +1300,17 @@ pub mod tests {
                     // prologue
                     Op::Alloc(RecordSignature::new(1, 2)),
                     Op::PtrPopEnv,
-                    Op::PtrPopLocal(2),
-                    Op::PtrPopLocal(1),
-                    Op::PopLocal(0),
+                    Op::PtrStore(2),
+                    Op::PtrStore(1),
+                    Op::Store(0),
                     // ENV: [RET-ADDR [@closure-1 v p] RET-ENV]
                     // body
-                    Op::PtrPushLocal(1),
+                    Op::PtrFetch(1),
                     Op::PushFrom(1),
                     Op::PtrDrop(0),
                     // epilogue
-                    Op::PushLocal(0),
-                    Op::PtrPushLocal(2),
+                    Op::Fetch(0),
+                    Op::PtrFetch(2),
                     Op::PtrPopEnv,
                     Op::Jump,
                     Op::label("after-closure-1"),
@@ -1318,9 +1318,9 @@ pub mod tests {
                     Op::Alloc(RecordSignature::new(2, 1)),
                     Op::push_addr("closure-1"),
                     Op::PopInto(0),
-                    Op::PushLocal(3),
+                    Op::Fetch(3),
                     Op::PopInto(1),
-                    Op::PtrPushLocal(7),
+                    Op::PtrFetch(7),
                     Op::PtrPopInto(2),
                 ]
             )
@@ -1344,19 +1344,19 @@ pub mod tests {
                     // prologue
                     Op::Alloc(RecordSignature::new(2, 3)),
                     Op::PtrPopEnv,
-                    Op::PtrPopLocal(4),
-                    Op::PtrPopLocal(3),
-                    Op::PtrPopLocal(2),
-                    Op::PopLocal(1),
-                    Op::PopLocal(0),
+                    Op::PtrStore(4),
+                    Op::PtrStore(3),
+                    Op::PtrStore(2),
+                    Op::Store(1),
+                    Op::Store(0),
                     // ENV: [RET-ADDR a z [@closure-1 v p] RET-ENV]
                     // body
-                    Op::PtrPushLocal(3),
+                    Op::PtrFetch(3),
                     Op::PushFrom(1),
                     Op::PtrDrop(0),
                     // epilogue
-                    Op::PushLocal(0),
-                    Op::PtrPushLocal(4),
+                    Op::Fetch(0),
+                    Op::PtrFetch(4),
                     Op::PtrPopEnv,
                     Op::Jump,
                     Op::label("after-closure-1"),
@@ -1364,9 +1364,9 @@ pub mod tests {
                     Op::Alloc(RecordSignature::new(2, 1)),
                     Op::push_addr("closure-1"),
                     Op::PopInto(0),
-                    Op::PushLocal(3),
+                    Op::Fetch(3),
                     Op::PopInto(1),
-                    Op::PtrPushLocal(7),
+                    Op::PtrFetch(7),
                     Op::PtrPopInto(2),
                 ]
             )
@@ -1390,17 +1390,17 @@ pub mod tests {
                     // prologue
                     Op::Alloc(RecordSignature::new(1, 2)),
                     Op::PtrPopEnv,
-                    Op::PtrPopLocal(2),
-                    Op::PtrPopLocal(1),
-                    Op::PopLocal(0),
+                    Op::PtrStore(2),
+                    Op::PtrStore(1),
+                    Op::Store(0),
                     // ENV: [RET-ADDR [@closure-1 v p] RET-ENV]
                     // body
-                    Op::PtrPushLocal(1),
+                    Op::PtrFetch(1),
                     Op::PtrPushFrom(2),
                     Op::PtrDrop(1),
                     // epilogue
-                    Op::PushLocal(0),
-                    Op::PtrPushLocal(2),
+                    Op::Fetch(0),
+                    Op::PtrFetch(2),
                     Op::PtrPopEnv,
                     Op::Jump,
                     Op::label("after-closure-1"),
@@ -1408,9 +1408,9 @@ pub mod tests {
                     Op::Alloc(RecordSignature::new(2, 1)),
                     Op::push_addr("closure-1"),
                     Op::PopInto(0),
-                    Op::PushLocal(3),
+                    Op::Fetch(3),
                     Op::PopInto(1),
-                    Op::PtrPushLocal(7),
+                    Op::PtrFetch(7),
                     Op::PtrPopInto(2),
                 ]
             )
@@ -1477,11 +1477,11 @@ pub mod tests {
                     Op::label("main"),
                     Op::Alloc(RecordSignature::new(1, 1)),
                     Op::PtrPopEnv,
-                    Op::PtrPopLocal(1),
-                    Op::PopLocal(0),
+                    Op::PtrStore(1),
+                    Op::Store(0),
                     Op::Const(42),
-                    Op::PushLocal(0),
-                    Op::PtrPushLocal(1),
+                    Op::Fetch(0),
+                    Op::PtrFetch(1),
                     Op::PtrPopEnv,
                     Op::Jump,
                 ]
