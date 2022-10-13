@@ -31,10 +31,6 @@ pub enum Op<T> {
     PtrPushLocal(Int),
     PtrPopLocal(Int),
 
-    SetClosure,
-    PushClosed(Int),
-    PtrPushClosed(Int),
-
     PushFrom(Int),
     PopInto(Int),
     PtrPushFrom(Int),
@@ -93,9 +89,6 @@ impl<T> Op<T> {
             Op::PtrPopEnv => Op::PtrPopEnv,
             Op::PushLocal(idx) => Op::PushLocal(*idx),
             Op::PopLocal(idx) => Op::PopLocal(*idx),
-            Op::SetClosure => Op::SetClosure,
-            Op::PushClosed(idx) => Op::PushClosed(*idx),
-            Op::PtrPushClosed(idx) => Op::PtrPushClosed(*idx),
             Op::PtrPushLocal(idx) => Op::PtrPushLocal(*idx),
             Op::PtrPopLocal(idx) => Op::PtrPopLocal(*idx),
             Op::PushFrom(idx) => Op::PushFrom(*idx),
@@ -205,7 +198,6 @@ pub struct Vm<AC, GC> {
     val_stack: Vec<Int>,
     ptr_stack: Vec<Ptr>,
     env: Ptr,
-    cls: Ptr,
 
     builtins: Vec<BuiltinFunction<AC, GC>>,
 }
@@ -226,7 +218,6 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
             val_stack: vec![],
             ptr_stack: vec![],
             env: 0,
-            cls: 0,
             builtins: vec![],
         }
     }
@@ -302,9 +293,6 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
                     let val = self.ptr_stack.pop().unwrap();
                     self.set_local(idx, val);
                 }
-                Op::SetClosure => self.cls = self.ptr_stack.pop().unwrap(),
-                Op::PushClosed(idx) => self.val_stack.push(self.get_ptr_offset(self.cls, idx)),
-                Op::PtrPushClosed(idx) => self.ptr_stack.push(self.get_ptr_offset(self.cls, idx)),
                 Op::PushFrom(idx) => self.val_stack.push(self.get_field(idx)),
                 Op::PopInto(idx) => {
                     let val = self.val_stack.pop().unwrap();
@@ -402,9 +390,7 @@ impl<AC: Allocator, GC: GarbageCollector> Vm<AC, GC> {
 
     fn collect_garbage(&mut self) {
         self.ptr_stack.push(self.env);
-        self.ptr_stack.push(self.cls);
         self.gc.collect(&mut self.ptr_stack, &mut self.heap);
-        self.cls = self.ptr_stack.pop().unwrap();
         self.env = self.ptr_stack.pop().unwrap();
     }
 
