@@ -6,6 +6,12 @@ use std::rc::Rc;
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Str(Rc<str>);
 
+impl Str {
+    pub fn interned(s: &str) -> Self {
+        Str(s.into())
+    }
+}
+
 impl PartialEq<str> for Str {
     fn eq(&self, other: &str) -> bool {
         &*self.0 == other

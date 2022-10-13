@@ -19,6 +19,7 @@ pub enum Binding {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Program(pub Vec<Definition>);
 
+// (define->val (a b c) (x y z) 42)
 #[derive(Debug, Eq, PartialEq)]
 pub enum Definition {
     ValFunc(Str, Vec<Str>, Vec<Str>, ValExpr),
@@ -237,11 +238,9 @@ impl Compile for PtrExpr {
                     panic!("expected pointer, but {ident} is a value")
                 }
                 Some(Binding::LocalPtr(idx)) => vec![Op::PtrFetch(*idx)],
-                Some(Binding::ClosedPtr(cls, idx)) => vec![
-                    Op::PtrFetch(*cls),
-                    Op::PtrPushFrom(*idx),
-                    Op::PtrDrop(1),
-                ],
+                Some(Binding::ClosedPtr(cls, idx)) => {
+                    vec![Op::PtrFetch(*cls), Op::PtrPushFrom(*idx), Op::PtrDrop(1)]
+                }
             },
             PtrExpr::Record(vargs, pargs) => compiler.compile_record(vargs, pargs, env),
             PtrExpr::GetField(idx, rec) => {
@@ -908,6 +907,31 @@ macro_rules! vmlang {
     };
 }
 
+pub use parsing::parse;
+mod parsing {
+    use super::*;
+    use lrlex::lrlex_mod;
+    use lrpar::lrpar_mod;
+    // Using `lrlex_mod!` brings the lexer for `calc.l` into scope. By default the
+    // module name will be `calc_l` (i.e. the file name, minus any extensions,
+    // with a suffix of `_l`).
+    lrlex_mod!("tier02_vmlang/lexer.l");
+    // Using `lrpar_mod!` brings the parser for `calc.y` into scope. By default the
+    // module name will be `calc_y` (i.e. the file name, minus any extensions,
+    // with a suffix of `_y`).
+    lrpar_mod!("tier02_vmlang/parser.y");
+
+    pub fn parse(src: &str) -> Program {
+        let lexerdef = lexer_l::lexerdef();
+        let lexer = lexerdef.lexer(src);
+        let (prog, errs) = parser_y::parse(&lexer);
+        for e in errs {
+            println!("{}", e);
+        }
+        prog.unwrap().unwrap()
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -1494,6 +1518,7 @@ pub mod tests {
 
         #[test]
         fn simple_program() {
+            let program = parse("(define->val (main () ()) 0)");
             assert_eq!(
                 LanguageContext::default().run(&vmlang!(program
                     (define (main () () -> val) 42))),
