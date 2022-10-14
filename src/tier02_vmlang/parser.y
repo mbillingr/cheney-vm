@@ -41,8 +41,6 @@ Number -> Result<Int, Box<dyn Error>>:
 %%
 
 use std::error::Error;
-use lrlex::DefaultLexeme;
-use lrpar::NonStreamingLexer;
 use crate::str::Str;
 use crate::tier02_vmlang as t2;
 use crate::vm::Int;
@@ -55,7 +53,6 @@ fn flatten<T>(lhs: Result<Vec<T>, Box<dyn Error>>, rhs: Result<T, Box<dyn Error>
 }
 
 fn parse_int(s: &str) -> Result<Int, Box<dyn Error>> {
-    return Ok(42);
     match s.parse::<u64>() {
         Ok(val) => Ok(val),
         Err(_) => {

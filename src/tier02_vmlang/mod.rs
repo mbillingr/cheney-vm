@@ -1518,12 +1518,8 @@ pub mod tests {
 
         #[test]
         fn simple_program() {
-            let program = parse("(define->val (main () ()) 0)");
-            assert_eq!(
-                LanguageContext::default().run(&vmlang!(program
-                    (define (main () () -> val) 42))),
-                42
-            );
+            let program = parse("(define->val (main () ()) 42)");
+            assert_eq!(LanguageContext::default().run(&program), 42);
         }
 
         #[test]
