@@ -33,6 +33,8 @@ pub trait Expression: std::fmt::Debug {
     fn free_vars(&self, env: &Env) -> HashMap<Str, Rc<dyn Type>>;
     fn to_valexpr(&self, env: &Env) -> t2::ValExpr;
     fn to_ptrexpr(&self, env: &Env) -> t2::PtrExpr;
+
+    fn as_any(&self) -> &dyn Any;
 }
 
 #[derive(Debug)]
@@ -42,7 +44,7 @@ pub enum ExprEnum {
     Record(Vec<Rc<dyn Expression>>),
     Ref(Str),
     If(Rc<dyn Expression>, Rc<dyn Expression>, Rc<dyn Expression>),
-    Call(Box<ExprEnum>, Vec<Rc<dyn Expression>>),
+    Call(Rc<dyn Expression>, Vec<Rc<dyn Expression>>),
     Lambda(Vec<Str>, Vec<Rc<dyn Type>>, Rc<dyn Expression>),
     GetField(Int, Box<ExprEnum>),
 }
@@ -158,7 +160,10 @@ impl Expression for ExprEnum {
         match self {
             ExprEnum::Null => panic!("can't infer type of Null"),
             ExprEnum::Const(_) => Value::new(),
-            ExprEnum::Ref(ident) => env.lookup(ident).unwrap().clone(),
+            ExprEnum::Ref(ident) => env
+                .lookup(ident)
+                .unwrap_or_else(|| panic!("Unbound identifier {ident}"))
+                .clone(),
             ExprEnum::Record(args) => RecordType::new(get_expression_types(args, env)),
             ExprEnum::If(c, a, b) => {
                 c.check(&Value, env);
@@ -255,7 +260,7 @@ impl Expression for ExprEnum {
                     let vargs = vargs.map(|x| x.to_valexpr(env)).collect();
                     let pargs = pargs.map(|x| x.to_ptrexpr(env)).collect();
 
-                    if let ExprEnum::Ref(name) = &**func {
+                    if let Some(ExprEnum::Ref(name)) = func.as_any().downcast_ref() {
                         return t2::ValExpr::Builtin(name.clone(), vargs, pargs);
                     } else {
                         unimplemented!("builtin must be a direct ref (no first-class builtins)")
@@ -364,6 +369,10 @@ impl Expression for ExprEnum {
             ),
             _ => panic!("expected pointer, got {self:?}"),
         }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -519,8 +528,11 @@ mod parsing {
         let lexerdef = lexer_l::lexerdef();
         let lexer = lexerdef.lexer(src);
         let (prog, errs) = parser_y::parse(&lexer);
-        for e in errs {
-            println!("{}", e);
+        if !errs.is_empty() {
+            for e in errs {
+                eprintln!("{}", e.pp(&lexer, &parser_y::token_epp));
+            }
+            panic!("Parser encountered errors")
         }
         prog.unwrap().unwrap()
     }
@@ -611,25 +623,13 @@ mod tests {
 
     #[test]
     fn simple_prog() {
-        let prog = Program(vec![
-            FunctionDefinition {
-                name: "main".into(),
-                params: vec![],
-                return_type: Rc::new(Value),
-                param_types: vec![],
-                body: Rc::new(ExprEnum::Call(
-                    Box::new(ExprEnum::Ref("foo".into())),
-                    vec![],
-                )),
-            },
-            FunctionDefinition {
-                name: "foo".into(),
-                params: vec![],
-                return_type: Rc::new(Value),
-                param_types: vec![],
-                body: Rc::new(ExprEnum::Const(42)),
-            },
-        ]);
+        let prog = parse(
+            "main : -> Int
+            main = (foo)
+
+            foo : -> Int
+            foo = 42",
+        );
 
         assert_eq!(LanguageContext::default().run(&prog), 42);
     }
@@ -644,8 +644,8 @@ mod tests {
                 return_type: value.clone(),
                 param_types: vec![],
                 body: Rc::new(ExprEnum::Call(
-                    Box::new(ExprEnum::Call(
-                        Box::new(ExprEnum::Ref("make-fn".into())),
+                    Rc::new(ExprEnum::Call(
+                        Rc::new(ExprEnum::Ref("make-fn".into())),
                         rcvec![ExprEnum::Const(42)],
                     )),
                     vec![],
@@ -670,6 +670,14 @@ mod tests {
             },
         ]);
 
+        /*let prog = parse(
+            "main : -> Int
+            main = ((make-fn 42))
+
+            make-fn : Int -> (-> Int)
+            make-fn n = (closure n = (lambda = n))",
+        );*/
+
         assert_eq!(LanguageContext::default().run(&prog), 42);
     }
 
@@ -682,7 +690,7 @@ mod tests {
                 return_type: Rc::new(Value),
                 param_types: vec![],
                 body: Rc::new(ExprEnum::Call(
-                    Box::new(ExprEnum::Ref("fib".into())),
+                    Rc::new(ExprEnum::Ref("fib".into())),
                     rcvec![ExprEnum::Const(6)],
                 )),
             },
@@ -693,24 +701,24 @@ mod tests {
                 param_types: rcvec![Value],
                 body: Rc::new(ExprEnum::If(
                     Rc::new(ExprEnum::Call(
-                        Box::new(ExprEnum::Ref("<".into())),
+                        Rc::new(ExprEnum::Ref("<".into())),
                         rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
                     )),
                     Rc::new(ExprEnum::Const(1)),
                     Rc::new(ExprEnum::Call(
-                        Box::new(ExprEnum::Ref("+".into())),
+                        Rc::new(ExprEnum::Ref("+".into())),
                         rcvec![
                             ExprEnum::Call(
-                                Box::new(ExprEnum::Ref("fib".into())),
+                                Rc::new(ExprEnum::Ref("fib".into())),
                                 rcvec![ExprEnum::Call(
-                                    Box::new(ExprEnum::Ref("-".into())),
+                                    Rc::new(ExprEnum::Ref("-".into())),
                                     rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(1)],
                                 )],
                             ),
                             ExprEnum::Call(
-                                Box::new(ExprEnum::Ref("fib".into())),
+                                Rc::new(ExprEnum::Ref("fib".into())),
                                 rcvec![ExprEnum::Call(
-                                    Box::new(ExprEnum::Ref("-".into())),
+                                    Rc::new(ExprEnum::Ref("-".into())),
                                     rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
                                 )],
                             )

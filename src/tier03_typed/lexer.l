@@ -9,6 +9,9 @@
 
 Int     "INT"
 
+closure "CLOSURE"
+lambda  "LAMBDA"
+
 [0-9]+  "NUMBER"
-\w+     "IDENT"
+[\w-]+  "IDENT"
 [\t \n]+ ;
