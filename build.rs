@@ -4,7 +4,8 @@ use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     build_parser("tier01_asm/lexer.l", "tier01_asm/parser.y")?;
-    build_parser("tier02_vmlang/lexer.l", "tier02_vmlang/parser.y")
+    build_parser("tier02_vmlang/lexer.l", "tier02_vmlang/parser.y")?;
+    build_parser("tier03_typed/lexer.l", "tier03_typed/parser.y")
 }
 
 fn build_parser(lexer_spec: &'static str, parser_spec: &'static str) -> Result<(), Box<dyn Error>> {

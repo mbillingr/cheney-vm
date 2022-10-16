@@ -13,6 +13,24 @@ pub struct Function(pub FunctionSignature);
 #[derive(Debug)]
 pub struct Closure(pub FunctionSignature, pub HashMap<Str, Rc<dyn Type>>);
 
+pub fn get_fnsignature(t: &dyn Type) -> Option<&FunctionSignature> {
+    let tany = t.as_any();
+
+    if let Some(Builtin(sig)) = tany.downcast_ref::<Builtin>() {
+        return Some(sig);
+    }
+
+    if let Some(Function(sig)) = tany.downcast_ref::<Function>() {
+        return Some(sig);
+    }
+
+    if let Some(Closure(sig, _)) = tany.downcast_ref::<Closure>() {
+        return Some(sig);
+    }
+
+    None
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
     pub ptypes: Vec<Rc<dyn Type>>,

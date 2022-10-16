@@ -51,7 +51,7 @@ pub enum ExprEnum {
 pub struct FunctionDefinition {
     name: Str,
     params: Vec<Str>,
-    body: ExprEnum,
+    body: Rc<dyn Expression>,
     param_types: Vec<Rc<dyn Type>>,
     return_type: Rc<dyn Type>,
 }
@@ -501,6 +501,31 @@ impl LanguageContext {
     }
 }
 
+pub use parsing::parse;
+mod parsing {
+    use super::*;
+    use lrlex::lrlex_mod;
+    use lrpar::lrpar_mod;
+    // Using `lrlex_mod!` brings the lexer for `calc.l` into scope. By default the
+    // module name will be `calc_l` (i.e. the file name, minus any extensions,
+    // with a suffix of `_l`).
+    lrlex_mod!("tier03_typed/lexer.l");
+    // Using `lrpar_mod!` brings the parser for `calc.y` into scope. By default the
+    // module name will be `calc_y` (i.e. the file name, minus any extensions,
+    // with a suffix of `_y`).
+    lrpar_mod!("tier03_typed/parser.y");
+
+    pub fn parse(src: &str) -> Program {
+        let lexerdef = lexer_l::lexerdef();
+        let lexer = lexerdef.lexer(src);
+        let (prog, errs) = parser_y::parse(&lexer);
+        for e in errs {
+            println!("{}", e);
+        }
+        prog.unwrap().unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,11 +580,11 @@ mod tests {
             params: vec!["a".into(), "b".into(), "c".into()],
             return_type: RecordType::new(vec![empty.clone(), value.clone(), value.clone()]),
             param_types: vec![value.clone(), empty.clone(), value.clone()],
-            body: ExprEnum::Record(rcvec![
+            body: Rc::new(ExprEnum::Record(rcvec![
                 ExprEnum::Ref("b".into()),
                 ExprEnum::Ref("a".into()),
                 ExprEnum::Ref("c".into())
-            ]),
+            ])),
         };
 
         let env = Env::Empty;
@@ -579,6 +604,12 @@ mod tests {
     }
 
     #[test]
+    fn trivial_prog() {
+        let prog = parse("main : -> Int main = 42");
+        assert_eq!(LanguageContext::default().run(&prog), 42);
+    }
+
+    #[test]
     fn simple_prog() {
         let prog = Program(vec![
             FunctionDefinition {
@@ -586,14 +617,17 @@ mod tests {
                 params: vec![],
                 return_type: Rc::new(Value),
                 param_types: vec![],
-                body: ExprEnum::Call(Box::new(ExprEnum::Ref("foo".into())), vec![]),
+                body: Rc::new(ExprEnum::Call(
+                    Box::new(ExprEnum::Ref("foo".into())),
+                    vec![],
+                )),
             },
             FunctionDefinition {
                 name: "foo".into(),
                 params: vec![],
                 return_type: Rc::new(Value),
                 param_types: vec![],
-                body: ExprEnum::Const(42),
+                body: Rc::new(ExprEnum::Const(42)),
             },
         ]);
 
@@ -609,13 +643,13 @@ mod tests {
                 params: vec![],
                 return_type: value.clone(),
                 param_types: vec![],
-                body: ExprEnum::Call(
+                body: Rc::new(ExprEnum::Call(
                     Box::new(ExprEnum::Call(
                         Box::new(ExprEnum::Ref("make-fn".into())),
                         rcvec![ExprEnum::Const(42)],
                     )),
                     vec![],
-                ),
+                )),
             },
             FunctionDefinition {
                 name: "make-fn".into(),
@@ -628,7 +662,11 @@ mod tests {
                     HashMap::from([("n".into(), value.clone())]),
                 )),
                 param_types: rcvec![Value],
-                body: ExprEnum::Lambda(vec![], vec![], Rc::new(ExprEnum::Ref("n".into()))),
+                body: Rc::new(ExprEnum::Lambda(
+                    vec![],
+                    vec![],
+                    Rc::new(ExprEnum::Ref("n".into())),
+                )),
             },
         ]);
 
@@ -643,17 +681,17 @@ mod tests {
                 params: vec![],
                 return_type: Rc::new(Value),
                 param_types: vec![],
-                body: ExprEnum::Call(
+                body: Rc::new(ExprEnum::Call(
                     Box::new(ExprEnum::Ref("fib".into())),
                     rcvec![ExprEnum::Const(6)],
-                ),
+                )),
             },
             FunctionDefinition {
                 name: "fib".into(),
                 params: vec!["n".into()],
                 return_type: Rc::new(Value),
                 param_types: rcvec![Value],
-                body: ExprEnum::If(
+                body: Rc::new(ExprEnum::If(
                     Rc::new(ExprEnum::Call(
                         Box::new(ExprEnum::Ref("<".into())),
                         rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
@@ -678,7 +716,7 @@ mod tests {
                             )
                         ],
                     )),
-                ),
+                )),
             },
         ]);
 
@@ -697,7 +735,7 @@ mod tests {
             params: vec![],
             param_types: vec![],
             return_type: Named::new("List"),
-            body: ExprEnum::Null,
+            body: Rc::new(ExprEnum::Null),
         };
 
         assert_eq!(
@@ -710,10 +748,10 @@ mod tests {
             params: vec!["car".into(), "cdr".into()],
             param_types: vec![Value::new(), Named::new("List")],
             return_type: Named::new("List"),
-            body: ExprEnum::Record(rcvec![
+            body: Rc::new(ExprEnum::Record(rcvec![
                 ExprEnum::Ref("cdr".into()),
                 ExprEnum::Ref("car".into()),
-            ]),
+            ])),
         };
 
         assert_eq!(
@@ -734,7 +772,10 @@ mod tests {
             params: vec!["list".into()],
             param_types: vec![Named::new("List")],
             return_type: Rc::new(Value),
-            body: ExprEnum::GetField(1, Box::new(ExprEnum::Ref("list".into()))),
+            body: Rc::new(ExprEnum::GetField(
+                1,
+                Box::new(ExprEnum::Ref("list".into())),
+            )),
         };
 
         assert_eq!(
@@ -755,7 +796,10 @@ mod tests {
             params: vec!["list".into()],
             param_types: vec![Named::new("List")],
             return_type: Named::new("List"),
-            body: ExprEnum::GetField(0, Box::new(ExprEnum::Ref("list".into()))),
+            body: Rc::new(ExprEnum::GetField(
+                0,
+                Box::new(ExprEnum::Ref("list".into())),
+            )),
         };
 
         assert_eq!(
