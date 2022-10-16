@@ -8,7 +8,7 @@ use crate::tier03_typed::types::{Builtin, Closure, Function, RecordType, Value};
 use crate::vm::{BuiltinFunctionType, Int};
 use std::any::Any;
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use types::FunctionSignature;
 
@@ -30,7 +30,7 @@ pub trait Type: std::fmt::Debug {
 pub trait Expression: std::fmt::Debug {
     fn check(&self, t: &dyn Type, env: &Env);
     fn get_type(&self, env: &Env) -> Rc<dyn Type>;
-    fn free_vars(&self, env: &Env) -> HashMap<Str, Rc<dyn Type>>;
+    fn free_vars(&self) -> HashSet<Str>;
     fn to_valexpr(&self, env: &Env) -> t2::ValExpr;
     fn to_ptrexpr(&self, env: &Env) -> t2::PtrExpr;
 
@@ -184,16 +184,22 @@ impl Expression for ExprEnum {
                 }
                 panic!("can't call expression of type {t:?}")
             }
-            ExprEnum::Lambda(_, ptypes, body) => {
+            ExprEnum::Lambda(params, ptypes, body) => {
+                let local_env = env.extend(params, ptypes);
+
                 let functype = FunctionSignature {
                     ptypes: ptypes.clone(),
-                    returns: body.get_type(env),
+                    returns: body.get_type(&local_env),
                 };
 
-                let fv = self.free_vars(env);
+                let fv = self.free_vars();
                 if fv.is_empty() {
                     Rc::new(Function(functype))
                 } else {
+                    let fv: HashMap<_, _> = fv
+                        .into_iter()
+                        .map(|v| env.lookup(&v).map(|t| (v, t.clone())).unwrap())
+                        .collect();
                     Rc::new(Closure(functype, fv))
                 }
             }
@@ -204,27 +210,25 @@ impl Expression for ExprEnum {
         }
     }
 
-    fn free_vars(&self, env: &Env) -> HashMap<Str, Rc<dyn Type>> {
+    fn free_vars(&self) -> HashSet<Str> {
         match self {
-            ExprEnum::Null | ExprEnum::Const(_) => HashMap::new(),
-            ExprEnum::Ref(ident) => {
-                HashMap::from([(ident.clone(), env.lookup(ident).unwrap().clone())])
-            }
-            ExprEnum::Record(args) => free_vars(args, env),
-            ExprEnum::If(c, a, b) => free_vars(&[&**a, &**b, &**c], env),
+            ExprEnum::Null | ExprEnum::Const(_) => HashSet::new(),
+            ExprEnum::Ref(ident) => HashSet::from([ident.clone()]),
+            ExprEnum::Record(args) => free_vars(args),
+            ExprEnum::If(c, a, b) => free_vars(&[&**a, &**b, &**c]),
             ExprEnum::Call(func, args) => {
-                let mut fv = free_vars(args, env);
-                fv.extend(func.free_vars(env));
+                let mut fv = free_vars(args);
+                fv.extend(func.free_vars());
                 fv
             }
             ExprEnum::Lambda(params, _, body) => {
-                let mut fv = body.free_vars(env);
+                let mut fv = body.free_vars();
                 for p in params {
                     fv.remove(p);
                 }
                 fv
             }
-            ExprEnum::GetField(_, rec) => rec.free_vars(env),
+            ExprEnum::GetField(_, rec) => rec.free_vars(),
         }
     }
 
@@ -275,7 +279,7 @@ impl Expression for ExprEnum {
 
                 let local_env = env.extend(params, ptypes);
 
-                match body.get_type(env) {
+                match body.get_type(&local_env) {
                     rt if rt.is_value(&local_env) => t2::ValExpr::LambdaVal(
                         vparams,
                         pparams,
@@ -333,11 +337,13 @@ impl Expression for ExprEnum {
                 panic!("can't call a {ft:?}")
             }
             ExprEnum::Lambda(params, ptypes, body) => {
-                let free_vars = self.free_vars(env);
-                let frees = free_vars.keys().cloned().collect::<Vec<_>>();
-                let ftypes = free_vars.values().cloned().collect::<Vec<_>>();
+                let free_vars: Vec<_> = self.free_vars().into_iter().collect();
+                let free_types = free_vars
+                    .iter()
+                    .map(|v| env.lookup(v).unwrap().clone())
+                    .collect::<Vec<_>>();
 
-                let (vfree, pfree) = distribute(&frees, &ftypes, env);
+                let (vfree, pfree) = distribute(&free_vars, &free_types, env);
                 let vfree = vfree.cloned().collect();
                 let pfree = pfree.cloned().collect();
 
@@ -435,11 +441,11 @@ fn get_recarg_types(expr: &ExprEnum, env: &Env) -> Vec<Rc<dyn Type>> {
     }
 }
 
-fn free_vars<T: Borrow<dyn Expression>>(xs: &[T], env: &Env) -> HashMap<Str, Rc<dyn Type>> {
+fn free_vars<T: Borrow<dyn Expression>>(xs: &[T]) -> HashSet<Str> {
     xs.iter()
         .map(Borrow::borrow)
-        .map(|x| x.free_vars(env))
-        .fold(HashMap::new(), |mut acc, fv| {
+        .map(|x| x.free_vars())
+        .fold(HashSet::new(), |mut acc, fv| {
             acc.extend(fv);
             acc
         })
@@ -635,6 +641,16 @@ mod tests {
     }
 
     #[test]
+    fn apply_lambda_aka_fixlet() {
+        let prog = parse(
+            "main : -> Int
+            main = ((lambda n:Int = n) 42)",
+        );
+
+        assert_eq!(LanguageContext::default().run(&prog), 42);
+    }
+
+    #[test]
     fn simple_closure() {
         let value: Rc<dyn Type> = Rc::new(Value);
         let prog = Program(vec![
@@ -675,7 +691,7 @@ mod tests {
             main = ((make-fn 42))
 
             make-fn : Int -> (-> Int)
-            make-fn n = (closure n = (lambda = n))",
+            make-fn n = (lambda = n)",
         );*/
 
         assert_eq!(LanguageContext::default().run(&prog), 42);

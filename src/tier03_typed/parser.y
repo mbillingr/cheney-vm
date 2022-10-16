@@ -45,22 +45,6 @@ TopDef -> Result<t3::FunctionDefinition, Box<dyn Error>>:
         }
     ;
 
-Expr -> Result<Rc<dyn t3::Expression>, Box<dyn Error>>:
-      Number { Ok(Rc::new(t3::ExprEnum::Const($1?))) }
-    | Ident  { Ok(Rc::new(t3::ExprEnum::Ref($1?))) }
-    | 'LPAREN' Exprs 'RPAREN'
-        {
-            let mut args = $2?;
-            let fun = args.remove(0);
-            Ok(Rc::new(t3::ExprEnum::Call(fun, args)))
-        }
-    ;
-
-Exprs -> Result<Vec<Rc<dyn t3::Expression>>, Box<dyn Error>>:
-      Expr { Ok(vec![$1?]) }
-    | Exprs Expr { flatten($1, $2) }
-    ;
-
 Type -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
       NonFnType { $1  }
     | NonFnType 'RARROW' Type
@@ -70,14 +54,14 @@ Type -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
                 Some(sig) => {
                     let mut params = vec![$1?];
                     params.extend(sig.ptypes.iter().cloned());
-                    Ok(t3::types::Function::new(params, sig.returns.clone()))
+                    Ok(t3::types::Callable::new(params, sig.returns.clone()))
                 }
                 None => {
-                    Ok(t3::types::Function::new(vec![$1?], right))
+                    Ok(t3::types::Callable::new(vec![$1?], right))
                 }
             }
         }
-    | 'RARROW' Type { Ok(t3::types::Function::new(vec![], $2?)) }
+    | 'RARROW' Type { Ok(t3::types::Callable::new(vec![], $2?)) }
     ;
 
 NonFnType -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
@@ -90,8 +74,42 @@ Idents -> Result<Vec<Str>, Box<dyn Error>>:
     | Idents Ident { flatten($1, $2) }
     ;
 
+TypedIdents -> Result<Vec<(Str, Rc<dyn t3::Type>)>, Box<dyn Error>>:
+      Ident 'COLON' Type { Ok(vec![($1?, $3?)]) }
+    | TypedIdents Ident 'COLON' Type { flatten($1, $2.and_then(|ident| Ok((ident, $4?)))) }
+    ;
+
 Ident -> Result<Str, Box<dyn Error>>:
     'IDENT' { Ok(Str::interned($lexer.span_str($1?.span()))) }
+    ;
+
+Expr -> Result<Rc<dyn t3::Expression>, Box<dyn Error>>:
+      Number { Ok(Rc::new(t3::ExprEnum::Const($1?))) }
+    | Ident  { Ok(Rc::new(t3::ExprEnum::Ref($1?))) }
+    | Lambda { Ok(Rc::new($1?)) }
+    | 'LPAREN' Exprs 'RPAREN'
+        {   // function call
+            let mut args = $2?;
+            let fun = args.remove(0);
+            Ok(Rc::new(t3::ExprEnum::Call(fun, args)))
+        }
+    ;
+
+Exprs -> Result<Vec<Rc<dyn t3::Expression>>, Box<dyn Error>>:
+      Expr { Ok(vec![$1?]) }
+    | Exprs Expr { flatten($1, $2) }
+    ;
+
+Lambda -> Result<t3::ExprEnum, Box<dyn Error>>:
+      'LPAREN' 'LAMBDA' 'EQUALS' Expr 'RPAREN'
+        {   // 0-ary lambda special form
+            Ok(t3::ExprEnum::Lambda(vec![], vec![], $4?))
+        }
+    | 'LPAREN' 'LAMBDA' TypedIdents 'EQUALS' Expr 'RPAREN'
+        {   // n-ary lambda special form
+            let (params, ptypes) = $3?.into_iter().unzip();
+            Ok(t3::ExprEnum::Lambda(params, ptypes, $5?))
+        }
     ;
 
 Number -> Result<Int, Box<dyn Error>>:

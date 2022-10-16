@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Debug)]
+pub struct Callable(pub FunctionSignature);
+
+#[derive(Debug)]
 pub struct Builtin(pub FunctionSignature);
 
 #[derive(Debug)]
@@ -16,15 +19,19 @@ pub struct Closure(pub FunctionSignature, pub HashMap<Str, Rc<dyn Type>>);
 pub fn get_fnsignature(t: &dyn Type) -> Option<&FunctionSignature> {
     let tany = t.as_any();
 
-    if let Some(Builtin(sig)) = tany.downcast_ref::<Builtin>() {
+    if let Some(Callable(sig)) = tany.downcast_ref() {
         return Some(sig);
     }
 
-    if let Some(Function(sig)) = tany.downcast_ref::<Function>() {
+    if let Some(Builtin(sig)) = tany.downcast_ref() {
         return Some(sig);
     }
 
-    if let Some(Closure(sig, _)) = tany.downcast_ref::<Closure>() {
+    if let Some(Function(sig)) = tany.downcast_ref() {
+        return Some(sig);
+    }
+
+    if let Some(Closure(sig, _)) = tany.downcast_ref() {
         return Some(sig);
     }
 
@@ -49,6 +56,42 @@ impl FunctionSignature {
     }
 }
 
+impl Callable {
+    pub fn new(ptypes: Vec<Rc<dyn Type>>, returns: Rc<dyn Type>) -> Rc<Self> {
+        Rc::new(Callable(FunctionSignature { ptypes, returns }))
+    }
+}
+
+impl Type for Callable {
+    fn is_value(&self, _env: &Env) -> bool {
+        panic!("Can't determine if an abstract callable is a value")
+    }
+
+    fn is_pointer(&self, _env: &Env) -> bool {
+        panic!("Can't determine if an abstract callable is a pointer")
+    }
+
+    fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
+        match other.as_any().downcast_ref() {
+            None => false,
+            Some(Self(sig)) => self.0.equal(sig, env),
+        }
+    }
+
+    fn resolve<'a>(&'a self, _env: &'a Env) -> &'a dyn Type {
+        self
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn callable_signature(&self) -> Option<(&[Rc<dyn Type>], &dyn Type)> {
+        let FunctionSignature { ptypes, returns } = &self.0;
+        Some((ptypes, &**returns))
+    }
+}
+
 impl Builtin {
     pub fn new(ptypes: Vec<Rc<dyn Type>>, returns: Rc<dyn Type>) -> Rc<Self> {
         Rc::new(Builtin(FunctionSignature { ptypes, returns }))
@@ -65,9 +108,9 @@ impl Type for Builtin {
     }
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any().downcast_ref::<Self>() {
+        match other.as_any().downcast_ref() {
             None => false,
-            Some(Builtin(sig)) => self.0.equal(sig, env),
+            Some(Self(sig)) => self.0.equal(sig, env),
         }
     }
 
@@ -101,9 +144,9 @@ impl Type for Function {
     }
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any().downcast_ref::<Self>() {
+        match other.as_any().downcast_ref() {
             None => false,
-            Some(Function(sig)) => self.0.equal(sig, env),
+            Some(Self(sig)) => self.0.equal(sig, env),
         }
     }
 
@@ -141,9 +184,9 @@ impl Type for Closure {
     }
 
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
-        match other.as_any().downcast_ref::<Self>() {
+        match other.as_any().downcast_ref() {
             None => false,
-            Some(Closure(sig, cls)) => self.0.equal(sig, env) && closure_equal(&self.1, cls, env),
+            Some(Self(sig, cls)) => self.0.equal(sig, env) && closure_equal(&self.1, cls, env),
         }
     }
 
