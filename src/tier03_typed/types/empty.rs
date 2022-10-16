@@ -1,20 +1,13 @@
-use crate::tier03_types::{Env, Type};
+use crate::tier03_typed::{Env, Type};
 use std::any::Any;
-use std::rc::Rc;
 
 /// The Empty type, which can't have a value
 #[derive(Debug)]
-pub struct Value;
+pub struct Empty;
 
-impl Value {
-    pub fn new() -> Rc<Value> {
-        Rc::new(Value)
-    }
-}
-
-impl Type for Value {
+impl Type for Empty {
     fn is_value(&self, _env: &Env) -> bool {
-        true
+        false
     }
 
     fn is_pointer(&self, _env: &Env) -> bool {

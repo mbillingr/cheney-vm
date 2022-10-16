@@ -4,7 +4,7 @@ use crate::env::Environment;
 use crate::memory::{ChattyCollector, CopyAllocator, CopyCollector};
 use crate::str::Str;
 use crate::tier02_vmlang as t2;
-use crate::tier03_types::types::{Builtin, Closure, Function, RecordType, Value};
+use crate::tier03_typed::types::{Builtin, Closure, Function, RecordType, Value};
 use crate::vm::{BuiltinFunctionType, Int};
 use std::any::Any;
 use std::borrow::Borrow;
@@ -504,7 +504,7 @@ impl LanguageContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tier03_types::types::{Empty, Named, Value};
+    use crate::tier03_typed::types::{Empty, Named, Value};
 
     #[test]
     fn structurally_same_types_are_equal() {

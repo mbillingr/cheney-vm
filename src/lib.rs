@@ -57,7 +57,7 @@ mod memory;
 mod str;
 pub mod tier01_asm;
 pub mod tier02_vmlang;
-pub mod tier03_types;
+pub mod tier03_typed;
 //pub mod typelang;
 pub mod vm;
 //pub mod vmlang;
