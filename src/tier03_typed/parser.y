@@ -47,21 +47,13 @@ TopDef -> Result<t3::FunctionDefinition, Box<dyn Error>>:
 
 Type -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
       NonFnType { $1  }
-    | NonFnType 'RARROW' Type
-        {
-            let right = $3?;
-            match t3::types::get_fnsignature(&*right) {
-                Some(sig) => {
-                    let mut params = vec![$1?];
-                    params.extend(sig.ptypes.iter().cloned());
-                    Ok(t3::types::Callable::new(params, sig.returns.clone()))
-                }
-                None => {
-                    Ok(t3::types::Callable::new(vec![$1?], right))
-                }
-            }
-        }
+    | Types 'RARROW' Type { Ok(t3::types::Callable::new($1?, $3?)) }
     | 'RARROW' Type { Ok(t3::types::Callable::new(vec![], $2?)) }
+    ;
+
+Types -> Result<Vec<Rc<dyn t3::Type>>, Box<dyn Error>>:
+      NonFnType { Ok(vec![$1?]) }
+    | Types NonFnType { flatten($1, $2) }
     ;
 
 NonFnType -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:

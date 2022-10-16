@@ -140,7 +140,7 @@ impl Expression for ExprEnum {
                         assert!(returns.is_equal(&*t, env));
                         check_expressions(args, &params, env);
                     }
-                    t => panic!("can't call expression of type {t:?}"),
+                    _ => panic!("can't call expression of type {ft:?}"),
                 }
             }
             ExprEnum::Lambda(_, _, _) => assert!(self.get_type(env).is_equal(t, env)),
@@ -379,6 +379,22 @@ impl Expression for ExprEnum {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+impl ExprEnum {
+    fn resolve_callables(&self) -> Self {
+        match self {
+            ExprEnum::Null => ExprEnum::Null,
+            ExprEnum::Const(c) => ExprEnum::Const(*c),
+            ExprEnum::Ref(s) => ExprEnum::Ref(s.clone()),
+            ExprEnum::Record(f) => ExprEnum::Record(todo!()),
+            _ => todo!(
+                "functions that take callables should take closures. functions that return \
+                callables should return the most specific type. when a function or builtin is passed \
+                where a closure is expected an empty closure should be built in place."
+            ),
+        }
     }
 }
 
@@ -686,13 +702,13 @@ mod tests {
             },
         ]);
 
-        /*let prog = parse(
+        let prog = parse(
             "main : -> Int
             main = ((make-fn 42))
 
             make-fn : Int -> (-> Int)
             make-fn n = (lambda = n)",
-        );*/
+        );
 
         assert_eq!(LanguageContext::default().run(&prog), 42);
     }
