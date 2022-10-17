@@ -10,6 +10,7 @@ use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::AtomicU64;
 use types::FunctionSignature;
 
 pub trait Type: std::fmt::Debug {
@@ -26,8 +27,25 @@ pub trait Type: std::fmt::Debug {
         None
     }
 
+    fn cast(
+        &self,
+        _t: &dyn Type,
+        _env: &Env,
+    ) -> Option<Box<dyn FnOnce(Rc<dyn Expression>) -> Rc<dyn Expression>>> {
+        None
+    }
+
     fn assert_eq(&self, b: &dyn Type, env: &Env) {
         assert!(self.is_equal(b, env), "{:?} != {:?}", self, b)
+    }
+
+    fn assert_castable(&self, t: &dyn Type, env: &Env) {
+        assert!(
+            self.cast(t, env).is_some(),
+            "invalid type cast from {:?} to {:?}",
+            self,
+            t
+        )
     }
 }
 
@@ -51,6 +69,7 @@ pub enum ExprEnum {
     Call(Rc<dyn Expression>, Vec<Rc<dyn Expression>>),
     Lambda(Vec<Str>, Vec<Rc<dyn Type>>, Rc<dyn Expression>),
     GetField(Int, Box<ExprEnum>),
+    Cast(Rc<dyn Expression>, Rc<dyn Type>),
 }
 
 #[derive(Debug)]
@@ -131,7 +150,10 @@ impl Expression for ExprEnum {
                 Some(RecordType { fields }) => check_expressions(xs, fields, env),
                 _ => panic!("{self:?} is not a {t:?}"),
             },
-            ExprEnum::Ref(ident) => assert!(env.lookup(ident).unwrap().is_equal(t, env)),
+            ExprEnum::Ref(ident) => env
+                .lookup(ident)
+                .unwrap_or_else(|| panic!("Unbound identifier {ident}"))
+                .assert_eq(t, env),
             ExprEnum::If(c, a, b) => {
                 c.check(&Value, env);
                 a.check(t, env);
@@ -156,6 +178,10 @@ impl Expression for ExprEnum {
                     }
                     _ => panic!("expected record type, but got {t_rec:?}"),
                 }
+            }
+            ExprEnum::Cast(expr, tgt) => {
+                tgt.assert_eq(t.resolve(env), env);
+                expr.get_type(env).assert_castable(t, env);
             }
         }
     }
@@ -211,6 +237,7 @@ impl Expression for ExprEnum {
                 Some(RecordType { fields }) => fields[*idx as usize].clone(),
                 o => panic!("expected record type, but got {o:?}"),
             },
+            ExprEnum::Cast(_, _) => todo!(),
         }
     }
 
@@ -233,6 +260,7 @@ impl Expression for ExprEnum {
                 fv
             }
             ExprEnum::GetField(_, rec) => rec.free_vars(),
+            ExprEnum::Cast(_, _) => todo!(),
         }
     }
 
@@ -377,6 +405,10 @@ impl Expression for ExprEnum {
                 ))),
                 Box::new(rec.to_ptrexpr(env)),
             ),
+            ExprEnum::Cast(expr, tgt) => {
+                let caster = expr.get_type(env).cast(&*tgt.resolve(env), env).unwrap();
+                caster(expr.clone()).to_ptrexpr(env)
+            }
             _ => panic!("expected pointer, got {self:?}"),
         }
     }
@@ -548,6 +580,18 @@ mod parsing {
     }
 }
 
+/// generate a name that is guaranteed to be unique
+fn gensym(name: &str) -> Str {
+    // we create unique names by
+    //   1. attaching an increasing counter
+    //   2. including an unparsable character (space)
+    // this is not perfect, but should suffice for now
+    let n = GENSYM_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("<{name} {n}>").into()
+}
+
+static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,6 +706,38 @@ mod tests {
 
             make-fn : Int -> (=> Int)
             make-fn n = (lambda = n)",
+        );
+
+        assert_eq!(LanguageContext::default().run(&prog), 42);
+    }
+
+    #[test]
+    fn pass_closure_to_function() {
+        let prog = parse(
+            "main : -> Int
+            main = (apply (make-fn 42))
+
+            make-fn : Int -> (=> Int)
+            make-fn n = (lambda = n)
+
+            apply : (=> Int) -> Int
+            apply f = (f)",
+        );
+
+        assert_eq!(LanguageContext::default().run(&prog), 42);
+    }
+
+    #[test]
+    fn pass_function_to_function() {
+        let prog = parse(
+            "main : -> Int
+            main = (apply (cast const-fn : => Int))
+
+            const-fn : -> Int
+            const-fn = 42
+
+            apply : (=> Int) -> Int
+            apply f = (f)",
         );
 
         assert_eq!(LanguageContext::default().run(&prog), 42);

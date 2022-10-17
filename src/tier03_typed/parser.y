@@ -83,6 +83,7 @@ Expr -> Result<Rc<dyn t3::Expression>, Box<dyn Error>>:
       Number { Ok(Rc::new(t3::ExprEnum::Const($1?))) }
     | Ident  { Ok(Rc::new(t3::ExprEnum::Ref($1?))) }
     | Lambda { Ok(Rc::new($1?)) }
+    | Cast { Ok(Rc::new($1?)) }
     | 'LPAREN' Exprs 'RPAREN'
         {   // function call
             let mut args = $2?;
@@ -105,6 +106,13 @@ Lambda -> Result<t3::ExprEnum, Box<dyn Error>>:
         {   // n-ary lambda special form
             let (params, ptypes) = $3?.into_iter().unzip();
             Ok(t3::ExprEnum::Lambda(params, ptypes, $5?))
+        }
+    ;
+
+Cast -> Result<t3::ExprEnum, Box<dyn Error>>:
+    'LPAREN' 'CAST' Expr 'COLON' Type 'RPAREN'
+        {
+            Ok(t3::ExprEnum::Cast($3?, $5?))
         }
     ;
 

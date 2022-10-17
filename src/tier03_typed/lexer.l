@@ -11,6 +11,7 @@
 
 Int     "INT"
 
+cast    "CAST"
 closure "CLOSURE"
 lambda  "LAMBDA"
 

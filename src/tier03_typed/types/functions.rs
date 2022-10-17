@@ -1,5 +1,5 @@
 use crate::str::Str;
-use crate::tier03_typed::{Env, Type};
+use crate::tier03_typed::{gensym, Env, ExprEnum, Expression, Type};
 use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -118,6 +118,38 @@ impl Type for Function {
     fn callable_signature(&self) -> Option<(&[Rc<dyn Type>], &dyn Type)> {
         let FunctionSignature { ptypes, returns } = &self.0;
         Some((ptypes, &**returns))
+    }
+
+    fn cast(
+        &self,
+        t: &dyn Type,
+        env: &Env,
+    ) -> Option<Box<dyn FnOnce(Rc<dyn Expression>) -> Rc<dyn Expression>>> {
+        if let Some(Closure(sig, _)) = t.as_any().downcast_ref() {
+            if !self.0.equal(sig, env) {
+                return None;
+            }
+
+            // casting to (an empty) closure with the following transformation:
+            //   callable  -->  (lambda (p ...) (callable p ...))
+            let params: Vec<_> = sig.ptypes.iter().map(|_| gensym("x")).collect();
+            let refs: Vec<_> = params
+                .iter()
+                .cloned()
+                .map(|x| -> Rc<dyn Expression> { Rc::new(ExprEnum::Ref(x)) })
+                .collect();
+            let sig = sig.clone();
+
+            return Some(Box::new(move |expr| {
+                Rc::new(ExprEnum::Lambda(
+                    params,
+                    sig.ptypes.clone(),
+                    Rc::new(ExprEnum::Call(expr, refs)),
+                ))
+            }));
+        }
+
+        None
     }
 }
 
