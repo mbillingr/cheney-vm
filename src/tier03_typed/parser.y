@@ -84,6 +84,7 @@ Expr -> Result<Rc<dyn t3::Expression>, Box<dyn Error>>:
     | Ident  { Ok(Rc::new(t3::ExprEnum::Ref($1?))) }
     | Lambda { Ok(Rc::new($1?)) }
     | Cast { Ok(Rc::new($1?)) }
+    | If { Ok(Rc::new($1?)) }
     | 'LPAREN' Exprs 'RPAREN'
         {   // function call
             let mut args = $2?;
@@ -113,6 +114,13 @@ Cast -> Result<t3::ExprEnum, Box<dyn Error>>:
     'LPAREN' 'CAST' Expr 'COLON' Type 'RPAREN'
         {
             Ok(t3::ExprEnum::Cast($3?, $5?))
+        }
+    ;
+
+If -> Result<t3::ExprEnum, Box<dyn Error>>:
+      'LPAREN' 'IF' Expr Expr Expr 'RPAREN'
+        {
+            todo!()
         }
     ;
 

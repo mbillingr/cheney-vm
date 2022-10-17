@@ -13,8 +13,9 @@ Int     "INT"
 
 cast    "CAST"
 closure "CLOSURE"
+if      "IF"
 lambda  "LAMBDA"
 
 [0-9]+  "NUMBER"
-[\w-]+  "IDENT"
+(\w|[-+<>!?])+  "IDENT"
 [\t \n]+ ;

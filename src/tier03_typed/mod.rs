@@ -790,6 +790,17 @@ mod tests {
             },
         ]);
 
+        let prog = parse(
+            "main : -> Int
+            main = (fib 6)
+
+            fib : Int -> Int
+            fib n = (if (< n 2)
+                        1
+                        (+ (fib (- n 1))
+                           (fib (- n 2)))",
+        );
+
         assert_eq!(LanguageContext::default().run(&prog), 13);
     }
 
