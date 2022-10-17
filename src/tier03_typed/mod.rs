@@ -25,6 +25,10 @@ pub trait Type: std::fmt::Debug {
     fn callable_signature(&self) -> Option<(&[Rc<dyn Type>], &dyn Type)> {
         None
     }
+
+    fn assert_eq(&self, b: &dyn Type, env: &Env) {
+        assert!(self.is_equal(b, env), "{:?} != {:?}", self, b)
+    }
 }
 
 pub trait Expression: std::fmt::Debug {
@@ -122,7 +126,7 @@ impl Expression for ExprEnum {
     fn check(&self, t: &dyn Type, env: &Env) {
         match self {
             ExprEnum::Null => assert!(t.is_pointer(env)),
-            ExprEnum::Const(_) => assert!(Value.is_equal(t, env)),
+            ExprEnum::Const(_) => Value.assert_eq(t, env),
             ExprEnum::Record(xs) => match t.resolve(env).as_any().downcast_ref() {
                 Some(RecordType { fields }) => check_expressions(xs, fields, env),
                 _ => panic!("{self:?} is not a {t:?}"),
@@ -137,13 +141,13 @@ impl Expression for ExprEnum {
                 let ft = f.get_type(env);
                 match ft.callable_signature() {
                     Some((params, returns)) => {
-                        assert!(returns.is_equal(&*t, env));
+                        returns.assert_eq(&*t, env);
                         check_expressions(args, &params, env);
                     }
                     _ => panic!("can't call expression of type {ft:?}"),
                 }
             }
-            ExprEnum::Lambda(_, _, _) => assert!(self.get_type(env).is_equal(t, env)),
+            ExprEnum::Lambda(_, _, _) => self.get_type(env).assert_eq(t, env),
             ExprEnum::GetField(idx, rec) => {
                 let t_rec = rec.get_type(env);
                 match t_rec.resolve(env).as_any().downcast_ref() {
@@ -652,45 +656,11 @@ mod tests {
 
     #[test]
     fn simple_closure() {
-        let value: Rc<dyn Type> = Rc::new(Value);
-        let prog = Program(vec![
-            FunctionDefinition {
-                name: "main".into(),
-                params: vec![],
-                return_type: value.clone(),
-                param_types: vec![],
-                body: Rc::new(ExprEnum::Call(
-                    Rc::new(ExprEnum::Call(
-                        Rc::new(ExprEnum::Ref("make-fn".into())),
-                        rcvec![ExprEnum::Const(42)],
-                    )),
-                    vec![],
-                )),
-            },
-            FunctionDefinition {
-                name: "make-fn".into(),
-                params: vec!["n".into()],
-                return_type: Rc::new(Closure(
-                    FunctionSignature {
-                        ptypes: vec![],
-                        returns: value.clone(),
-                    },
-                    HashMap::from([("n".into(), value.clone())]),
-                )),
-                param_types: rcvec![Value],
-                body: Rc::new(ExprEnum::Lambda(
-                    vec![],
-                    vec![],
-                    Rc::new(ExprEnum::Ref("n".into())),
-                )),
-            },
-        ]);
-
         let prog = parse(
             "main : -> Int
             main = ((make-fn 42))
 
-            make-fn : Int -> (-> Int)
+            make-fn : Int -> (=> Int)
             make-fn n = (lambda = n)",
         );
 

@@ -49,6 +49,10 @@ Type -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
       NonFnType { $1  }
     | Types 'FTYPE' Type { Ok(t3::types::Function::new($1?, $3?)) }
     | 'FTYPE' Type { Ok(t3::types::Function::new(vec![], $2?)) }
+    | Types 'CTYPE' Type { Ok(t3::types::Closure::opaque($1?, $3?)) }
+    | 'CTYPE' Type { Ok(t3::types::Closure::opaque(vec![], $2?)) }
+    | Types 'BTYPE' Type { Ok(t3::types::Builtin::new($1?, $3?)) }
+    | 'BTYPE' Type { Ok(t3::types::Builtin::new(vec![], $2?)) }
     ;
 
 Types -> Result<Vec<Rc<dyn t3::Type>>, Box<dyn Error>>:

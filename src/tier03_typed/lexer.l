@@ -3,6 +3,8 @@
 \(      "LPAREN"
 \)      "RPAREN"
 ->      "FTYPE"
+=>      "CTYPE"
+~>      "BTYPE"
 =       "EQUALS"
 
 \n      "NEWLINE"

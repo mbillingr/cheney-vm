@@ -129,6 +129,10 @@ impl Closure {
     ) -> Rc<Self> {
         Rc::new(Closure(FunctionSignature { ptypes, returns }, cls))
     }
+
+    pub fn opaque(ptypes: Vec<Rc<dyn Type>>, returns: Rc<dyn Type>) -> Rc<Self> {
+        Self::new(ptypes, returns, HashMap::new())
+    }
 }
 
 impl Type for Closure {
@@ -143,7 +147,7 @@ impl Type for Closure {
     fn is_equal(&self, other: &dyn Type, env: &Env) -> bool {
         match other.as_any().downcast_ref() {
             None => false,
-            Some(Self(sig, cls)) => self.0.equal(sig, env) && closure_equal(&self.1, cls, env),
+            Some(Self(sig, _)) => self.0.equal(sig, env), // not sure if the closed environment should contribute to equality
         }
     }
 
@@ -159,25 +163,4 @@ impl Type for Closure {
         let FunctionSignature { ptypes, returns } = &self.0;
         Some((ptypes, &**returns))
     }
-}
-
-fn closure_equal(
-    x: &HashMap<Str, Rc<dyn Type>>,
-    y: &HashMap<Str, Rc<dyn Type>>,
-    env: &Env,
-) -> bool {
-    if x.len() != y.len() {
-        return false;
-    }
-    for (a, ta) in x {
-        match y.get(a) {
-            None => return false,
-            Some(tb) => {
-                if !ta.is_equal(&**tb, env) {
-                    return false;
-                }
-            }
-        }
-    }
-    true
 }
