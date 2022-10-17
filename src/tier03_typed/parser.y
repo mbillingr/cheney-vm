@@ -47,8 +47,8 @@ TopDef -> Result<t3::FunctionDefinition, Box<dyn Error>>:
 
 Type -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
       NonFnType { $1  }
-    | Types 'RARROW' Type { Ok(t3::types::Callable::new($1?, $3?)) }
-    | 'RARROW' Type { Ok(t3::types::Callable::new(vec![], $2?)) }
+    | Types 'FTYPE' Type { Ok(t3::types::Function::new($1?, $3?)) }
+    | 'FTYPE' Type { Ok(t3::types::Function::new(vec![], $2?)) }
     ;
 
 Types -> Result<Vec<Rc<dyn t3::Type>>, Box<dyn Error>>:

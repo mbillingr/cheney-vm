@@ -382,22 +382,6 @@ impl Expression for ExprEnum {
     }
 }
 
-impl ExprEnum {
-    fn resolve_callables(&self) -> Self {
-        match self {
-            ExprEnum::Null => ExprEnum::Null,
-            ExprEnum::Const(c) => ExprEnum::Const(*c),
-            ExprEnum::Ref(s) => ExprEnum::Ref(s.clone()),
-            ExprEnum::Record(f) => ExprEnum::Record(todo!()),
-            _ => todo!(
-                "functions that take callables should take closures. functions that return \
-                callables should return the most specific type. when a function or builtin is passed \
-                where a closure is expected an empty closure should be built in place."
-            ),
-        }
-    }
-}
-
 fn distribute<'a, T>(
     things: &'a [T],
     types: &'a [Rc<dyn Type>],

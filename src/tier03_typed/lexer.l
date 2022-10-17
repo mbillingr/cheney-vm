@@ -2,7 +2,7 @@
 :       "COLON"
 \(      "LPAREN"
 \)      "RPAREN"
-->      "RARROW"
+->      "FTYPE"
 =       "EQUALS"
 
 \n      "NEWLINE"
