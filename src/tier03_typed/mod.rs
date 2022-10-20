@@ -790,6 +790,26 @@ mod tests {
     }
 
     #[test]
+    fn functional_pairs() {
+        let prog = parse(
+            "main : -> Int
+            main = (car (cons 13 11))
+
+            cons : Int Int -> ((Int Int -> Int) => Int)
+            cons a d = (lambda f:(Int Int -> Int) = (f a d))
+
+            car : ((Int Int -> Int) => Int) -> Int
+            car p = (p (lambda a:Int d:Int = a))
+
+            cdr : ((Int Int -> Int) => Int) -> Int
+            cdr p = (p (lambda a:Int d:Int = d))
+            ",
+        );
+
+        assert_eq!(LanguageContext::default().run(&prog), 13);
+    }
+
+    #[test]
     fn list_type() {
         let env = Env::Empty.assoc(
             "List",
