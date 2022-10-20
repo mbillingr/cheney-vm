@@ -120,7 +120,7 @@ Cast -> Result<t3::ExprEnum, Box<dyn Error>>:
 If -> Result<t3::ExprEnum, Box<dyn Error>>:
       'LPAREN' 'IF' Expr Expr Expr 'RPAREN'
         {
-            todo!()
+            Ok(t3::ExprEnum::If($3?, $4?, $5?))
         }
     ;
 

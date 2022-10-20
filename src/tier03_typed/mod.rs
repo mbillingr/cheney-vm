@@ -745,51 +745,6 @@ mod tests {
 
     #[test]
     fn fib() {
-        let prog = Program(vec![
-            FunctionDefinition {
-                name: "main".into(),
-                params: vec![],
-                return_type: Rc::new(Value),
-                param_types: vec![],
-                body: Rc::new(ExprEnum::Call(
-                    Rc::new(ExprEnum::Ref("fib".into())),
-                    rcvec![ExprEnum::Const(6)],
-                )),
-            },
-            FunctionDefinition {
-                name: "fib".into(),
-                params: vec!["n".into()],
-                return_type: Rc::new(Value),
-                param_types: rcvec![Value],
-                body: Rc::new(ExprEnum::If(
-                    Rc::new(ExprEnum::Call(
-                        Rc::new(ExprEnum::Ref("<".into())),
-                        rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
-                    )),
-                    Rc::new(ExprEnum::Const(1)),
-                    Rc::new(ExprEnum::Call(
-                        Rc::new(ExprEnum::Ref("+".into())),
-                        rcvec![
-                            ExprEnum::Call(
-                                Rc::new(ExprEnum::Ref("fib".into())),
-                                rcvec![ExprEnum::Call(
-                                    Rc::new(ExprEnum::Ref("-".into())),
-                                    rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(1)],
-                                )],
-                            ),
-                            ExprEnum::Call(
-                                Rc::new(ExprEnum::Ref("fib".into())),
-                                rcvec![ExprEnum::Call(
-                                    Rc::new(ExprEnum::Ref("-".into())),
-                                    rcvec![ExprEnum::Ref("n".into()), ExprEnum::Const(2)],
-                                )],
-                            )
-                        ],
-                    )),
-                )),
-            },
-        ]);
-
         let prog = parse(
             "main : -> Int
             main = (fib 6)
@@ -798,7 +753,7 @@ mod tests {
             fib n = (if (< n 2)
                         1
                         (+ (fib (- n 1))
-                           (fib (- n 2)))",
+                           (fib (- n 2))))",
         );
 
         assert_eq!(LanguageContext::default().run(&prog), 13);
