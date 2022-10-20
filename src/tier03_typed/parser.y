@@ -61,8 +61,9 @@ Types -> Result<Vec<Rc<dyn t3::Type>>, Box<dyn Error>>:
     ;
 
 NonFnType -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
-      'INT' { Ok(t3::types::Value::new()) }
+      'INT_T' { Ok(t3::types::Value::new()) }
     | 'LPAREN' Type 'RPAREN' { $2 }
+    | 'LPAREN' 'RECORD_T' Types 'RPAREN' { Ok(t3::types::RecordType::new($3?)) }
     ;
 
 Idents -> Result<Vec<Str>, Box<dyn Error>>:
@@ -85,6 +86,8 @@ Expr -> Result<Rc<dyn t3::Expression>, Box<dyn Error>>:
     | Lambda { Ok(Rc::new($1?)) }
     | Cast { Ok(Rc::new($1?)) }
     | If { Ok(Rc::new($1?)) }
+    | Record { Ok(Rc::new($1?)) }
+    | RecRef { Ok(Rc::new($1?)) }
     | 'LPAREN' Exprs 'RPAREN'
         {   // function call
             let mut args = $2?;
@@ -121,6 +124,20 @@ If -> Result<t3::ExprEnum, Box<dyn Error>>:
       'LPAREN' 'IF' Expr Expr Expr 'RPAREN'
         {
             Ok(t3::ExprEnum::If($3?, $4?, $5?))
+        }
+    ;
+
+Record -> Result<t3::ExprEnum, Box<dyn Error>>:
+      'LPAREN' 'RECORD' Exprs 'RPAREN'
+        {
+            Ok(t3::ExprEnum::Record($3?))
+        }
+    ;
+
+RecRef -> Result<t3::ExprEnum, Box<dyn Error>>:
+      'LPAREN' 'RECREF' Number Expr 'RPAREN'
+        {
+            Ok(t3::ExprEnum::GetField($3?, $4?))
         }
     ;
 

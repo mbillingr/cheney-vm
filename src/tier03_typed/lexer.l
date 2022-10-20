@@ -9,12 +9,15 @@
 
 \n      "NEWLINE"
 
-Int     "INT"
+Int     "INT_T"
+Record  "RECORD_T"
 
 cast    "CAST"
 closure "CLOSURE"
 if      "IF"
 lambda  "LAMBDA"
+record  "RECORD"
+rec-ref "RECREF"
 
 [0-9]+  "NUMBER"
 (\w|[-+<>!?])+  "IDENT"

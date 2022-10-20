@@ -68,7 +68,7 @@ pub enum ExprEnum {
     If(Rc<dyn Expression>, Rc<dyn Expression>, Rc<dyn Expression>),
     Call(Rc<dyn Expression>, Vec<Rc<dyn Expression>>),
     Lambda(Vec<Str>, Vec<Rc<dyn Type>>, Rc<dyn Expression>),
-    GetField(Int, Box<ExprEnum>),
+    GetField(Int, Rc<dyn Expression>),
     Cast(Rc<dyn Expression>, Rc<dyn Type>),
 }
 
@@ -317,14 +317,18 @@ impl Expression for ExprEnum {
                         pparams,
                         Box::new(body.to_valexpr(&local_env)),
                     ),
-                    //rt if rt.is_pointer() => todo!(),
+                    rt if rt.is_pointer(&local_env) => t2::ValExpr::LambdaPtr(
+                        vparams,
+                        pparams,
+                        Box::new(body.to_ptrexpr(&local_env)),
+                    ),
                     rt => panic!("Don't know how to deal with return type {rt:?}"),
                 }
             }
             ExprEnum::GetField(idx, rec) => t2::ValExpr::GetField(
                 Box::new(t2::ValExpr::Const(map_index(
                     *idx,
-                    &get_recarg_types(rec, env),
+                    &get_recarg_types(&**rec, env),
                     env,
                 ))),
                 Box::new(rec.to_ptrexpr(env)),
@@ -393,14 +397,20 @@ impl Expression for ExprEnum {
                         pparams,
                         Box::new(body.to_valexpr(&local_env)),
                     ),
-                    //rt if rt.is_pointer() => todo!(),
+                    rt if rt.is_pointer(&local_env) => t2::PtrExpr::ClosurePtr(
+                        vfree,
+                        pfree,
+                        vparams,
+                        pparams,
+                        Box::new(body.to_ptrexpr(&local_env)),
+                    ),
                     rt => panic!("Don't know how to deal with return type {rt:?}"),
                 }
             }
             ExprEnum::GetField(idx, rec) => t2::PtrExpr::GetField(
                 Box::new(t2::ValExpr::Const(map_index(
                     *idx,
-                    &get_recarg_types(rec, env),
+                    &get_recarg_types(&**rec, env),
                     env,
                 ))),
                 Box::new(rec.to_ptrexpr(env)),
@@ -469,7 +479,7 @@ fn get_expression_types(xs: &[Rc<dyn Expression>], env: &Env) -> Vec<Rc<dyn Type
     xs.iter().map(|x| x.get_type(env)).collect()
 }
 
-fn get_recarg_types(expr: &ExprEnum, env: &Env) -> Vec<Rc<dyn Type>> {
+fn get_recarg_types(expr: &dyn Expression, env: &Env) -> Vec<Rc<dyn Type>> {
     let trec = expr.get_type(env);
     match trec.resolve(env).as_any().downcast_ref() {
         Some(RecordType { fields }) => fields.clone(),
@@ -760,6 +770,26 @@ mod tests {
     }
 
     #[test]
+    fn records() {
+        let prog = parse(
+            "main : -> Int
+            main = (car (cons 13 11))
+
+            cons : Int Int -> (Record Int Int)
+            cons a d = (record a d)
+
+            car : (Record Int Int) -> Int
+            car p = (rec-ref 0 p)
+
+            cdr : (Record Int Int) -> Int
+            cdr p = (rec-ref 1 p)
+            ",
+        );
+
+        assert_eq!(LanguageContext::default().run(&prog), 13);
+    }
+
+    #[test]
     fn list_type() {
         let env = Env::Empty.assoc(
             "List",
@@ -808,10 +838,7 @@ mod tests {
             params: vec!["list".into()],
             param_types: vec![Named::new("List")],
             return_type: Rc::new(Value),
-            body: Rc::new(ExprEnum::GetField(
-                1,
-                Box::new(ExprEnum::Ref("list".into())),
-            )),
+            body: Rc::new(ExprEnum::GetField(1, Rc::new(ExprEnum::Ref("list".into())))),
         };
 
         assert_eq!(
@@ -832,10 +859,7 @@ mod tests {
             params: vec!["list".into()],
             param_types: vec![Named::new("List")],
             return_type: Named::new("List"),
-            body: Rc::new(ExprEnum::GetField(
-                0,
-                Box::new(ExprEnum::Ref("list".into())),
-            )),
+            body: Rc::new(ExprEnum::GetField(0, Rc::new(ExprEnum::Ref("list".into())))),
         };
 
         assert_eq!(
