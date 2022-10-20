@@ -10,7 +10,16 @@ Prog -> Result<t3::Program, Box<dyn Error>>:
       }
     ;
 
-TopDef -> Result<t3::FunctionDefinition, Box<dyn Error>>:
+TopDef -> Result<Rc<dyn t3::ToplevelDefinition>, Box<dyn Error>>:
+      TypeDef { Ok(Rc::new($1?)) }
+    | FuncDef { Ok(Rc::new($1?)) }
+    ;
+
+TypeDef -> Result<t3::TypeDefinition, Box<dyn Error>>:
+    'TYPE' Ident 'EQUALS' Type { Ok(t3::TypeDefinition { name: $2?, type_: $4? }) }
+    ;
+
+FuncDef -> Result<t3::FunctionDefinition, Box<dyn Error>>:
       Ident 'COLON' Type
       Ident Idents 'EQUALS' Expr {
             let name = $4?;
@@ -46,24 +55,21 @@ TopDef -> Result<t3::FunctionDefinition, Box<dyn Error>>:
     ;
 
 Type -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
-      NonFnType { $1  }
-    | Types 'FTYPE' Type { Ok(t3::types::Function::new($1?, $3?)) }
-    | 'FTYPE' Type { Ok(t3::types::Function::new(vec![], $2?)) }
-    | Types 'CTYPE' Type { Ok(t3::types::Closure::opaque($1?, $3?)) }
-    | 'CTYPE' Type { Ok(t3::types::Closure::opaque(vec![], $2?)) }
-    | Types 'BTYPE' Type { Ok(t3::types::Builtin::new($1?, $3?)) }
-    | 'BTYPE' Type { Ok(t3::types::Builtin::new(vec![], $2?)) }
+      'INT_T' { Ok(t3::types::Value::new()) }
+    | Ident { Ok(t3::types::Named::new($1?)) }
+    | 'LPAREN' 'RECORD_T' Types 'RPAREN' { Ok(t3::types::RecordType::new($3?)) }
+    | 'LPAREN' Type 'RPAREN' { $2 }
+    | 'LPAREN' Types 'FTYPE' Type 'RPAREN' { Ok(t3::types::Function::new($2?, $4?)) }
+    | 'LPAREN' 'FTYPE' Type 'RPAREN' { Ok(t3::types::Function::new(vec![], $3?)) }
+    | 'LPAREN' Types 'CTYPE' Type 'RPAREN' { Ok(t3::types::Closure::opaque($2?, $4?)) }
+    | 'LPAREN' 'CTYPE' Type 'RPAREN' { Ok(t3::types::Closure::opaque(vec![], $3?)) }
+    | 'LPAREN' Types 'BTYPE' Type 'RPAREN' { Ok(t3::types::Builtin::new($2?, $4?)) }
+    | 'LPAREN' 'BTYPE' Type 'RPAREN' { Ok(t3::types::Builtin::new(vec![], $3?)) }
     ;
 
 Types -> Result<Vec<Rc<dyn t3::Type>>, Box<dyn Error>>:
-      NonFnType { Ok(vec![$1?]) }
-    | Types NonFnType { flatten($1, $2) }
-    ;
-
-NonFnType -> Result<Rc<dyn t3::Type>, Box<dyn Error>>:
-      'INT_T' { Ok(t3::types::Value::new()) }
-    | 'LPAREN' Type 'RPAREN' { $2 }
-    | 'LPAREN' 'RECORD_T' Types 'RPAREN' { Ok(t3::types::RecordType::new($3?)) }
+      Type { Ok(vec![$1?]) }
+    | Types Type { flatten($1, $2) }
     ;
 
 Idents -> Result<Vec<Str>, Box<dyn Error>>:

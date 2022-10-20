@@ -18,6 +18,7 @@ if      "IF"
 lambda  "LAMBDA"
 record  "RECORD"
 rec-ref "RECREF"
+type    "TYPE"
 
 [0-9]+  "NUMBER"
 (\w|[-+<>!?])+  "IDENT"

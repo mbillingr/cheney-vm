@@ -72,6 +72,11 @@ pub enum ExprEnum {
     Cast(Rc<dyn Expression>, Rc<dyn Type>),
 }
 
+pub trait ToplevelDefinition: std::fmt::Debug {
+    fn check(&self, env: &Env) -> Vec<t2::Definition>;
+    fn extend(&self, env: &Env) -> Env;
+}
+
 #[derive(Debug)]
 pub struct FunctionDefinition {
     name: Str,
@@ -82,22 +87,33 @@ pub struct FunctionDefinition {
 }
 
 #[derive(Debug)]
-pub struct Program(Vec<FunctionDefinition>);
+pub struct TypeDefinition {
+    name: Str,
+    type_: Rc<dyn Type>,
+}
+
+#[derive(Debug)]
+pub struct Program(Vec<Rc<dyn ToplevelDefinition>>);
 
 type Env = Environment<Rc<dyn Type>>;
 
 impl Program {
     pub fn check(&self, env: &Env) -> t2::Program {
         let program_env = self.extend(env);
-        t2::Program(self.0.iter().map(|def| def.check(&program_env)).collect())
+        t2::Program(
+            self.0
+                .iter()
+                .map(|def| def.check(&program_env))
+                .flatten()
+                .collect(),
+        )
     }
 
     fn extend(&self, env: &Env) -> Env {
         let mut program_env = env.clone();
 
         for def in &self.0 {
-            let t = Function::new(def.param_types.clone(), def.return_type.clone());
-            program_env = program_env.assoc(&def.name, t);
+            program_env = def.extend(&program_env);
         }
 
         program_env
@@ -105,15 +121,27 @@ impl Program {
 }
 
 impl FunctionDefinition {
-    fn check(&self, env: &Env) -> t2::Definition {
-        let local_env = self.extend(env);
+    fn local_env(&self, env: &Env) -> Env {
+        let mut local_env = env.clone();
+        for (p, t) in self.params.iter().zip(&self.param_types) {
+            //assert!(!TypeEnum::equal(t, &TypeEnum::Empty, env));
+            assert!(t.is_value(env) || t.is_pointer(env));
+            local_env = local_env.assoc(p.clone(), t.clone());
+        }
+        local_env
+    }
+}
+
+impl ToplevelDefinition for FunctionDefinition {
+    fn check(&self, env: &Env) -> Vec<t2::Definition> {
+        let local_env = self.local_env(env);
         self.body.check(&*self.return_type, &local_env);
 
         let (vparams, pparams) = distribute(&self.params, &*self.param_types, env);
         let vparams = vparams.cloned().collect();
         let pparams = pparams.cloned().collect();
 
-        match &self.return_type {
+        vec![match &self.return_type {
             t if t.is_value(env) => t2::Definition::ValFunc(
                 self.name.clone(),
                 vparams,
@@ -127,17 +155,22 @@ impl FunctionDefinition {
                 self.body.to_ptrexpr(&local_env),
             ),
             t => panic!("Invalid return type {t:?}"),
-        }
+        }]
     }
 
     fn extend(&self, env: &Env) -> Env {
-        let mut local_env = env.clone();
-        for (p, t) in self.params.iter().zip(&self.param_types) {
-            //assert!(!TypeEnum::equal(t, &TypeEnum::Empty, env));
-            assert!(t.is_value(env) || t.is_pointer(env));
-            local_env = local_env.assoc(p.clone(), t.clone());
-        }
-        local_env
+        let t = Function::new(self.param_types.clone(), self.return_type.clone());
+        env.assoc(&self.name, t)
+    }
+}
+
+impl ToplevelDefinition for TypeDefinition {
+    fn check(&self, _env: &Env) -> Vec<t2::Definition> {
+        vec![]
+    }
+
+    fn extend(&self, env: &Env) -> Env {
+        env.assoc(self.name.clone(), self.type_.clone())
     }
 }
 
@@ -161,7 +194,7 @@ impl Expression for ExprEnum {
             }
             ExprEnum::Call(f, args) => {
                 let ft = f.get_type(env);
-                match ft.callable_signature() {
+                match ft.resolve(env).callable_signature() {
                     Some((params, returns)) => {
                         returns.assert_eq(&*t, env);
                         check_expressions(args, &params, env);
@@ -169,7 +202,7 @@ impl Expression for ExprEnum {
                     _ => panic!("can't call expression of type {ft:?}"),
                 }
             }
-            ExprEnum::Lambda(_, _, _) => self.get_type(env).assert_eq(t, env),
+            ExprEnum::Lambda(_, _, _) => self.get_type(env).assert_eq(t.resolve(env), env),
             ExprEnum::GetField(idx, rec) => {
                 let t_rec = rec.get_type(env);
                 match t_rec.resolve(env).as_any().downcast_ref() {
@@ -275,6 +308,7 @@ impl Expression for ExprEnum {
             ),
             ExprEnum::Call(func, args) => {
                 let ft = func.get_type(env);
+                let ft = ft.resolve(env);
                 if let Some(Function(FunctionSignature { ptypes, .. })) = ft.as_any().downcast_ref()
                 {
                     let (vargs, pargs) = distribute(args, &ptypes, env);
@@ -563,6 +597,7 @@ impl LanguageContext {
 }
 
 pub use parsing::parse;
+
 mod parsing {
     use super::*;
     use lrlex::lrlex_mod;
@@ -667,7 +702,7 @@ mod tests {
 
         assert_eq!(
             fndef.check(&env),
-            t2::Definition::PtrFunc(
+            vec![t2::Definition::PtrFunc(
                 "foo".into(),
                 intovec!["a", "c"],
                 intovec!["b"],
@@ -675,23 +710,23 @@ mod tests {
                     vec![t2::ValExpr::Ref("a".into()), t2::ValExpr::Ref("c".into())],
                     vec![t2::PtrExpr::Ref("b".into())]
                 )
-            )
+            )]
         );
     }
 
     #[test]
     fn trivial_prog() {
-        let prog = parse("main : -> Int main = 42");
+        let prog = parse("main : (-> Int) main = 42");
         assert_eq!(LanguageContext::default().run(&prog), 42);
     }
 
     #[test]
     fn simple_prog() {
         let prog = parse(
-            "main : -> Int
+            "main : (-> Int)
             main = (foo)
 
-            foo : -> Int
+            foo : (-> Int)
             foo = 42",
         );
 
@@ -701,7 +736,7 @@ mod tests {
     #[test]
     fn apply_lambda_aka_fixlet() {
         let prog = parse(
-            "main : -> Int
+            "main : (-> Int)
             main = ((lambda n:Int = n) 42)",
         );
 
@@ -711,10 +746,10 @@ mod tests {
     #[test]
     fn simple_closure() {
         let prog = parse(
-            "main : -> Int
+            "main : (-> Int)
             main = ((make-fn 42))
 
-            make-fn : Int -> (=> Int)
+            make-fn : (Int -> (=> Int))
             make-fn n = (lambda = n)",
         );
 
@@ -724,13 +759,13 @@ mod tests {
     #[test]
     fn pass_closure_to_function() {
         let prog = parse(
-            "main : -> Int
+            "main : (-> Int)
             main = (apply (make-fn 42))
 
-            make-fn : Int -> (=> Int)
+            make-fn : (Int -> (=> Int))
             make-fn n = (lambda = n)
 
-            apply : (=> Int) -> Int
+            apply : ((=> Int) -> Int)
             apply f = (f)",
         );
 
@@ -740,13 +775,13 @@ mod tests {
     #[test]
     fn pass_function_to_function() {
         let prog = parse(
-            "main : -> Int
-            main = (apply (cast const-fn : => Int))
+            "main : (-> Int)
+            main = (apply (cast const-fn : (=> Int)))
 
-            const-fn : -> Int
+            const-fn : (-> Int)
             const-fn = 42
 
-            apply : (=> Int) -> Int
+            apply : ((=> Int) -> Int)
             apply f = (f)",
         );
 
@@ -756,10 +791,10 @@ mod tests {
     #[test]
     fn fib() {
         let prog = parse(
-            "main : -> Int
+            "main : (-> Int)
             main = (fib 6)
 
-            fib : Int -> Int
+            fib : (Int -> Int)
             fib n = (if (< n 2)
                         1
                         (+ (fib (- n 1))
@@ -772,16 +807,18 @@ mod tests {
     #[test]
     fn records() {
         let prog = parse(
-            "main : -> Int
+            "main : (-> Int)
             main = (car (cons 13 11))
 
-            cons : Int Int -> (Record Int Int)
+            type Pair = (Record Int Int)
+
+            cons : (Int Int -> Pair)
             cons a d = (record a d)
 
-            car : (Record Int Int) -> Int
+            car : (Pair -> Int)
             car p = (rec-ref 0 p)
 
-            cdr : (Record Int Int) -> Int
+            cdr : (Pair -> Int)
             cdr p = (rec-ref 1 p)
             ",
         );
@@ -792,16 +829,18 @@ mod tests {
     #[test]
     fn functional_pairs() {
         let prog = parse(
-            "main : -> Int
+            "main : (-> Int)
             main = (car (cons 13 11))
 
-            cons : Int Int -> ((Int Int -> Int) => Int)
+            type Pair = ((Int Int -> Int) => Int)
+
+            cons : (Int Int -> Pair)
             cons a d = (lambda f:(Int Int -> Int) = (f a d))
 
-            car : ((Int Int -> Int) => Int) -> Int
+            car : (Pair -> Int)
             car p = (p (lambda a:Int d:Int = a))
 
-            cdr : ((Int Int -> Int) => Int) -> Int
+            cdr : (Pair -> Int)
             cdr p = (p (lambda a:Int d:Int = d))
             ",
         );
@@ -826,7 +865,12 @@ mod tests {
 
         assert_eq!(
             nildef.check(&env),
-            t2::Definition::PtrFunc("nil".into(), vec![], vec![], t2::PtrExpr::Null)
+            vec![t2::Definition::PtrFunc(
+                "nil".into(),
+                vec![],
+                vec![],
+                t2::PtrExpr::Null
+            )]
         );
 
         let consdef = FunctionDefinition {
@@ -842,7 +886,7 @@ mod tests {
 
         assert_eq!(
             consdef.check(&env),
-            t2::Definition::PtrFunc(
+            vec![t2::Definition::PtrFunc(
                 "cons".into(),
                 vec!["car".into()],
                 vec!["cdr".into()],
@@ -850,7 +894,7 @@ mod tests {
                     vec![t2::ValExpr::Ref("car".into())],
                     vec![t2::PtrExpr::Ref("cdr".into())],
                 )
-            )
+            )]
         );
 
         let cardef = FunctionDefinition {
@@ -863,7 +907,7 @@ mod tests {
 
         assert_eq!(
             cardef.check(&env),
-            t2::Definition::ValFunc(
+            vec![t2::Definition::ValFunc(
                 "car".into(),
                 vec![],
                 vec!["list".into()],
@@ -871,7 +915,7 @@ mod tests {
                     Box::new(t2::ValExpr::Const(0)),
                     Box::new(t2::PtrExpr::Ref("list".into()))
                 )
-            )
+            )]
         );
 
         let cdrdef = FunctionDefinition {
@@ -884,7 +928,7 @@ mod tests {
 
         assert_eq!(
             cdrdef.check(&env),
-            t2::Definition::PtrFunc(
+            vec![t2::Definition::PtrFunc(
                 "cdr".into(),
                 vec![],
                 vec!["list".into()],
@@ -892,7 +936,7 @@ mod tests {
                     Box::new(t2::ValExpr::Const(1)),
                     Box::new(t2::PtrExpr::Ref("list".into()))
                 )
-            )
+            )]
         );
     }
 }
